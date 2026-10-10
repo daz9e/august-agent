@@ -5,7 +5,7 @@ edition = "2024"
 description = "Wire formats of model APIs, shared by August's provider extensions"
 
 [dependencies]
-august-ext = { path = "../../../august/sdk" }
+august-ext = { git = "https://github.com/daz9e/august-core" }
 anyhow = "1"
 async-trait = "0.1"
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
