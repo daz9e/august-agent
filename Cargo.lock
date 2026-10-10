@@ -72,6 +72,7 @@ dependencies = [
 [[package]]
 name = "august-ext"
 version = "0.1.0"
+source = "git+https://github.com/daz9e/august-core#1dc3953463b9b17020330769420b1f89912a9202"
 dependencies = [
  "anyhow",
  "async-trait",
