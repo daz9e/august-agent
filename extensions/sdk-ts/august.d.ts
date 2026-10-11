@@ -90,8 +90,9 @@ declare module "august" {
   export type Op = { name: string; permission: Permission | null; about: string };
 
   /** A conversation's own settings. `model`: a model of the active provider or
-   *  `provider:model`; `system`: instructions added to the system prompt; `tools`: only these. */
-  export type SessionSettings = { model?: string; system?: string; tools?: string[] };
+   *  `provider:model`; `system`: instructions added to the system prompt; `tools`: only these;
+   *  `sections`: only these extensions' prompt sections, by name. */
+  export type SessionSettings = { model?: string; system?: string; tools?: string[]; sections?: string[] };
   export type SessionInfo = {
     id: string;
     /** The chat (`messenger:id`) that started it. */

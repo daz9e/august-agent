@@ -135,7 +135,7 @@ leave it unchanged.
   any loop of yours in that thread.
 - `session_start` `{ session, previous, reason: start|new, chat }`: before a
   conversation's first turn (`start`: the thread's first, or after a restart with none;
-  `new`: after `/new`). Return `{ model, system, tools }` to set the conversation's own
+  `new`: after `/new`). Return `{ model, system, tools, sections }` to set the conversation's own
   settings, e.g. another model for one messenger's threads (`ctx.thread.messenger`).
 - `session_changed` `{ reason: new|switch, previous, session }`: the thread's conversation
   was replaced, right away (drop per-conversation state here).
