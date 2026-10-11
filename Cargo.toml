@@ -89,6 +89,10 @@ name = "august-ext-memory"
 path = "extensions/memory/main.rs"
 
 [[bin]]
+name = "august-ext-inspect"
+path = "extensions/inspect/main.rs"
+
+[[bin]]
 name = "august-ext-messaging"
 path = "extensions/messaging/main.rs"
 
