@@ -8,13 +8,14 @@ set -e
 # Options:
 #   --binary       Install the prebuilt release (default)
 #   --source       Build with cargo (installs Rust if needed)
-#   --ref <ref>    A release tag (binary), or a tag/branch/commit (source)
+#   --ref <ref>    A version of august-agent, e.g. v0.2.0 (source: also a branch or commit);
+#                  it brings the core version it was built for
 #   -r <ref>       Shorthand for --ref
 #
 # Releases come from AUGUST_RELEASE_URL (default: this repo's GitHub releases).
 # Binaries go to AUGUST_INSTALL_DIR (default ~/.local/bin), all side by side: `august`
-# finds its extensions next to itself. A release bundles the core built from the commit
-# august-agent's Cargo.lock pins, so the two always match.
+# finds its extensions next to itself. Each version of august-agent pins one version of
+# the core (Cargo.toml), and a release bundles exactly that core, so the two always match.
 
 REPO="daz9e/august-agent"
 CORE_REPO="daz9e/august-core"
@@ -119,6 +120,8 @@ install_binary() {
         echo "$OUT" | sed 's/^/    /'
         exit 1
     fi
+    VERSIONS="$(cat "$TMP/out/VERSIONS" 2>/dev/null || true)"
+    rm -f "$TMP/out/VERSIONS"
     put_in_place "$TMP/out"
 }
 
@@ -136,7 +139,7 @@ install_source() {
     git clone --quiet "https://github.com/${REPO}.git" "$TMP/agent"
     [ -z "$REF" ] || git -C "$TMP/agent" checkout --quiet "$REF"
     # The core at the commit the lockfile pins the SDK to.
-    CORE_REV="$(sed -n "s|^source = \"git+https://github.com/${CORE_REPO}#\([0-9a-f]*\)\"|\1|p" "$TMP/agent/Cargo.lock" | head -n 1)"
+    CORE_REV="$(sed -n "s|^source = \"git+https://github.com/${CORE_REPO}[^#]*#\([0-9a-f]*\)\"|\1|p" "$TMP/agent/Cargo.lock" | head -n 1)"
     [ -n "$CORE_REV" ] || { echo "Could not find the core's commit in Cargo.lock"; exit 1; }
 
     echo "Building the extensions..."
@@ -144,6 +147,8 @@ install_source() {
     echo "Building the core (${CORE_REV})..."
     cargo install --locked --git "https://github.com/${CORE_REPO}" --rev "$CORE_REV" august --root "$TMP/root"
     put_in_place "$TMP/root/bin"
+    VERSIONS="august-agent $(sed -n 's/^version = "\(.*\)"/\1/p' "$TMP/agent/Cargo.toml" | head -n 1)
+august-core ${CORE_REV}"
 }
 
 case "$MODE" in
@@ -153,6 +158,7 @@ esac
 
 echo ""
 echo "✓ Installed august and its extensions to ${INSTALL_DIR}"
+[ -z "$VERSIONS" ] || echo "$VERSIONS" | sed 's/^/  /'
 case ":$PATH:" in
     *":$INSTALL_DIR:"*) ;;
     *) echo "  Add ${INSTALL_DIR} to your PATH first." ;;

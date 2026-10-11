@@ -1,6 +1,6 @@
-# On a `v*` tag: builds the core (at the commit Cargo.lock pins) and the default
-# extensions for each target, and publishes them as one archive per target, with its
-# sha256, for scripts/install.sh.
+# On a `v*` tag (the version in Cargo.toml): builds the default extensions and the core
+# version they pin (`august-ext`'s tag in Cargo.toml), and publishes them as one archive
+# per target, with its sha256 and a VERSIONS file, for scripts/install.sh.
 name: release
 
 on:
@@ -26,9 +26,17 @@ jobs:
         with:
           path: agent
 
-      - name: The core's commit
+      - name: Versions
         id: core
-        run: echo "rev=$(sed -n 's|^source = "git+https://github.com/daz9e/august-core#\([0-9a-f]*\)"|\1|p' agent/Cargo.lock | head -n 1)" >> "$GITHUB_OUTPUT"
+        run: |
+          agent=$(sed -n 's/^version = "\(.*\)"/\1/p' agent/Cargo.toml | head -n 1)
+          [ "v$agent" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME, but Cargo.toml says $agent"; exit 1; }
+          source=$(grep -m 1 '^source = "git+https://github.com/daz9e/august-core' agent/Cargo.lock)
+          tag=$(echo "$source" | sed -n 's/.*?tag=\([^#]*\)#.*/\1/p')
+          [ -n "$tag" ] || { echo "august-ext must be pinned to a core tag in Cargo.toml"; exit 1; }
+          echo "agent=$agent" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "rev=$(echo "$source" | sed 's/.*#\([0-9a-f]*\)"/\1/')" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v4
         with:
@@ -56,6 +64,7 @@ jobs:
           mkdir "$name"
           cp core/target/${{ matrix.target }}/release/august "$name/"
           find agent/target/${{ matrix.target }}/release -maxdepth 1 -type f -name 'august-ext-*' -perm -u+x -exec cp {} "$name/" \;
+          printf 'august-agent %s\naugust-core %s (%s)\n' "${{ steps.core.outputs.agent }}" "${{ steps.core.outputs.tag }}" "${{ steps.core.outputs.rev }}" > "$name/VERSIONS"
           tar -czf "$name.tar.gz" "$name"
           shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
 

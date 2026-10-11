@@ -11,7 +11,7 @@ curl -fsSL https://raw.githubusercontent.com/daz9e/august-agent/main/scripts/ins
 ```
 
 Linux (x86_64, arm64) and macOS. It puts `august` and its extensions into `~/.local/bin`
-(`AUGUST_INSTALL_DIR` to change). `sh -s -- --ref v0.1.0` picks a release; `--source`
+(`AUGUST_INSTALL_DIR` to change). `sh -s -- --ref v0.1.0` picks a version; `--source`
 builds with cargo instead.
 
 Then:
@@ -33,5 +33,13 @@ cargo build
 cargo test
 ```
 
-A release is a `v*` tag: CI builds the core at the commit `Cargo.lock` pins and these
-extensions, one archive per target.
+## Versions
+
+A version of august-agent pins one version of the core: the tag of `august-ext` in
+`Cargo.toml` (and `extensions/llm/Cargo.toml`). Installing a version brings that core with it,
+so the two always match.
+
+- New core: tag august-core (`v0.2.0`), point `august-ext` at that tag here, then
+  `cargo update -p august-ext`.
+- Release: bump `version` in `Cargo.toml`, tag the same (`v0.3.0`) and push the tag. CI builds
+  the extensions and the pinned core, one archive per target, with a `VERSIONS` file.
