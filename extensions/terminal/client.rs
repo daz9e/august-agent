@@ -322,7 +322,11 @@ impl Screen {
             return self.print(line);
         }
         // Rewritten: drawn again from where it differs (whole lines already drawn stay).
-        let same = old.bytes().zip(text.bytes()).take_while(|(a, b)| a == b).count().min(m.done);
+        let mut same = old.bytes().zip(text.bytes()).take_while(|(a, b)| a == b).count().min(m.done);
+        // Bytes alike can end inside a character (`é` and `ê` share their first byte).
+        while !text.is_char_boundary(same) {
+            same -= 1;
+        }
         let start = text[..same].rfind('\n').map(|i| i + 1).unwrap_or(0);
         m.done = start;
         m.lines = text[..start].matches('\n').count();

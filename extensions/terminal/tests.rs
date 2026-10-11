@@ -166,6 +166,16 @@ fn a_streaming_reply_is_drawn_line_by_line_once() {
 }
 
 #[test]
+fn a_rewrite_that_differs_inside_a_character_is_drawn_again() {
+    let mut s = Screen::new(false);
+    s.show(send("1", "привет\nпока", vec![]));
+    s.show(ToWindow::Idle);
+    drawn(&mut s);
+    s.show(edit("1", "привет\nпоки"));
+    assert_eq!(drawn(&mut s), ["  поки"]);
+}
+
+#[test]
 fn a_number_answers_the_open_question() {
     let mut s = Screen::new(false);
     let buttons = vec![Button { id: "y".into(), label: "Yes".into() }, Button { id: "n".into(), label: "No".into() }];
