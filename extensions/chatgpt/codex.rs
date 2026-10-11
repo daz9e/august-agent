@@ -195,16 +195,13 @@ async fn load_profile() -> Result<CodexProfile> {
         .context("not signed in to ChatGPT (Codex login), run /login chatgpt-codex")
 }
 
-/// Best effort: the Codex backend's model list, if it serves one.
-pub async fn list_models(http: &reqwest::Client) -> Result<Vec<String>> {
-    let mut p = load_profile().await?;
-    if p.expires_at <= now() + EXPIRY_MARGIN_SECS {
-        refresh(http, &mut p).await?;
-    }
+/// Best effort: the Codex backend's model list, if it serves one. Through the session, so a
+/// refresh here can't leave it holding a refresh token that was already rotated away.
+pub async fn list_models(http: &reqwest::Client, session: &Session) -> Result<Vec<String>> {
     let mut req = http
         .get(format!("{API_BASE}/models?client_version=1.0.0"))
-        .bearer_auth(&p.access_token);
-    for (k, v) in headers_for(&p.account_id) {
+        .bearer_auth(session.token().await?);
+    for (k, v) in session.headers() {
         req = req.header(k, v);
     }
     let resp = req.send().await?;

@@ -175,7 +175,7 @@ async fn main() {
         "chatgpt-codex",
         "ChatGPT via Codex login (legacy)",
         None,
-        |_| async { Ok(infos(codex::list_models(&august_llm::http_client()).await?)) },
+        |_| async { Ok(infos(codex::list_models(&august_llm::http_client(), &*codex_session().await?).await?)) },
         |req, stream| async move {
             let model = codex::model(codex_session().await?, req.model, req.effort).with_options(req.options);
             let mut on_text = |t: &str| stream.text(t);
