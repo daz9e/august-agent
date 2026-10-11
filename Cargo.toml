@@ -160,6 +160,10 @@ path = "extensions/voice/main.rs"
 name = "august-ext-web"
 path = "extensions/web/main.rs"
 
+[[bin]]
+name = "august-ext-wizard"
+path = "extensions/wizard/main.rs"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
 axum = "0.8"
