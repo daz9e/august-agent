@@ -114,6 +114,10 @@ async fn main() {
 }
 
 async fn serve(august: August) {
+    august.describe(
+        "The `browser` tool: a headless Chrome through agent-browser",
+        "Each chat (and each sub-agent) gets its own agent-browser session; files are read and written only inside the workspace.",
+    );
     let me = august.clone();
     august.register_tool(
         "browser",

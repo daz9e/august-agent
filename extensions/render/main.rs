@@ -92,6 +92,10 @@ async fn main() {
 }
 
 async fn serve(august: August) {
+    august.describe(
+        "Draws the user's turns: the reply streams into an edited message",
+        "Takes the core's `render` job: text is edited in place as often as the messenger allows, with a line per tool call; long replies continue in more messages.",
+    );
     august.takes(&["render"]);
     // Waiting out the messenger's edit interval, then sending a long reply in pieces.
     august.hook_timeout("render", Duration::from_secs(60));

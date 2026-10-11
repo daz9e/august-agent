@@ -182,14 +182,14 @@ async fn resolve_model(august: &August, ctx: &Ctx, args: &str) -> Result<Option<
 }
 
 /// `/stop`: "Stopping…", edited to "Stopped." once nothing runs in the thread any more.
-async fn stop(august: &August, ctx: &Ctx) -> Result<Option<String>> {
+async fn stop(ctx: &Ctx) -> Result<Option<String>> {
     if ctx.call("stop", mine(json!({}))).await?["cancelled"].as_u64().unwrap_or(0) == 0 {
         return Ok(Some("Nothing is running.".into()));
     }
     let id = ctx.send("Stopping…").await?;
     for _ in 0..300 {
         if ctx.call("status", mine(json!({}))).await?["busy"] != true {
-            august.edit(ctx.thread.as_ref().unwrap(), &id, "Stopped.").await?;
+            ctx.call("edit", json!({"id": id, "message": "Stopped."})).await?;
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -273,6 +273,10 @@ async fn main() {
 }
 
 async fn serve(august: August) {
+    august.describe(
+        "The everyday slash commands: /new, /stop, /model, /login, /config, ...",
+        "Each command wraps an operation of the core and counts as the user's own call.",
+    );
     august.needs(&["messaging", "turns", "sessions", "models", "admin", "config", "user"]);
     for (name, description) in COMMANDS {
         let a = august.clone();
@@ -280,7 +284,7 @@ async fn serve(august: August) {
             let a = a.clone();
             async move {
                 match *name {
-                    "stop" => stop(&a, &ctx).await,
+                    "stop" => stop(&ctx).await,
                     _ => command(&a, name, &args, &ctx).await.map(Some),
                 }
             }

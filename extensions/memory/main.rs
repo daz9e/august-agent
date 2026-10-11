@@ -1,7 +1,8 @@
 //! `memory`: durable facts about the user, kept in this extension's store and shown in the
 //! system prompt (from the next conversation, so the running prompt stays cacheable), plus
 //! full-text search over every past conversation. `remember`, `forget`, `search_history`,
-//! `/memory`. The facts may take `AUGUST_MEMORY_CHARS` characters in all (default 3000).
+//! `/memory`. The facts may take `max_chars` characters in all (default 3000;
+//! AUGUST_MEMORY_CHARS overrides it).
 
 use anyhow::{Result, anyhow, bail};
 use august_ext::{August, str_arg};
@@ -18,10 +19,6 @@ struct Fact {
     text: String,
 }
 
-fn limit() -> usize {
-    std::env::var("AUGUST_MEMORY_CHARS").ok().and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_MEMORY_CHARS)
-}
-
 /// The facts, behind one lock so parallel tool calls don't overwrite each other.
 #[derive(Clone)]
 struct Memory {
@@ -30,6 +27,11 @@ struct Memory {
 }
 
 impl Memory {
+    async fn limit(&self) -> Result<usize> {
+        let set = self.august.settings().await?["max_chars"].as_u64().map(|n| n as usize);
+        Ok(self.august.env("AUGUST_MEMORY_CHARS").and_then(|v| v.parse().ok()).or(set).unwrap_or(DEFAULT_MEMORY_CHARS))
+    }
+
     async fn facts(&self) -> Result<Vec<Fact>> {
         Ok(self.august.get("facts").await?.map(serde_json::from_value).transpose()?.unwrap_or_default())
     }
@@ -67,7 +69,7 @@ impl Memory {
             bail!("no fact #{id}");
         }
         let kept: usize = facts.iter().filter(|f| !replaces.contains(&f.id)).map(|f| f.text.chars().count()).sum();
-        let (used, limit) = (kept + fact.chars().count(), limit());
+        let (used, limit) = (kept + fact.chars().count(), self.limit().await?);
         if used > limit {
             let list: Vec<String> = facts.iter().map(|f| format!("#{} {}", f.id, f.text)).collect();
             bail!(
@@ -110,6 +112,15 @@ fn when(ms: &Value) -> String {
 async fn main() {
     let august = August::new();
     august.needs(&["sessions"]);
+    august.describe(
+        "Durable facts about the user, and search over past conversations",
+        "`remember`/`forget` keep facts in this extension's store; they show in the system prompt \
+         from the next conversation on. `search_history` searches every conversation; /memory lists the facts.",
+    );
+    august.settings_schema(json!({
+        "type": "object",
+        "properties": {"max_chars": {"type": "integer", "default": DEFAULT_MEMORY_CHARS, "description": "Characters all facts together may take"}},
+    }));
     let memory = Memory { august: august.clone(), lock: Arc::default() };
     memory.show(&[]);
     // Replies are read once `run` starts, so the saved facts load right after.

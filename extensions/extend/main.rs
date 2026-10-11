@@ -65,7 +65,13 @@ async fn serve(august: August) {
                         let command = json!({"command": ["bun", "run", host.display().to_string(), "index.ts", name]});
                         vec![("index.ts".into(), code.into()), ("extension.json".into(), serde_json::to_string_pretty(&command)?)]
                     }
-                    (None, Some(files)) => files.iter().map(|(p, c)| (p.clone(), c.as_str().unwrap_or_default().to_string())).collect(),
+                    (None, Some(files)) => {
+                        let text = |(p, c): (&String, &serde_json::Value)| Some((p.clone(), c.as_str()?.to_string()));
+                        match files.iter().map(text).collect::<Option<Vec<_>>>() {
+                            Some(files) => files,
+                            None => bail!("every entry of `files` must be the file's text"),
+                        }
+                    }
                     _ => bail!("give either `code` (TypeScript) or `files` (any language, with extension.json)"),
                 };
                 if !files.iter().any(|(p, _)| p == "extension.json") {

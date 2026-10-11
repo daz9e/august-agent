@@ -4,10 +4,11 @@
 //! fork of the conversation (same prompt, history and tools, so the provider's cache covers
 //! almost all of it) that may only use the memory and skill tools and writes without asking.
 //!
-//! Settings: `AUGUST_REVIEW=off`; `AUGUST_REVIEW_MEMORY_EVERY` (user turns between memory
-//! reviews, default 10, 0 = never); `AUGUST_REVIEW_SKILLS_AFTER` (tool calls after which
-//! skills are reviewed, default 15, 0 = never); `AUGUST_REVIEW_NOTIFY` (`off`, `on` (default):
-//! what kind of thing changed, `verbose`: every change).
+//! Settings: `memory_every` (user turns between memory reviews, default 10, 0 = never);
+//! `skills_after` (tool calls after which skills are reviewed, default 15, 0 = never);
+//! `notify` (`off`, `on` (default): what kind of thing changed, `verbose`: every change).
+//! The variables `AUGUST_REVIEW=off`, `AUGUST_REVIEW_MEMORY_EVERY`, `AUGUST_REVIEW_SKILLS_AFTER`
+//! and `AUGUST_REVIEW_NOTIFY` override them.
 
 use august_ext::{August, Ctx};
 use serde_json::{Value, json};
@@ -39,8 +40,9 @@ const SKILLS_PROMPT: &str = "Skills: how to do a class of task for this user —
     write up attempts that never worked as a recipe. Fix wrong text in place instead of \
     appending corrections. Built-in skills can't be changed.";
 
-fn setting(var: &str, default: usize) -> usize {
-    std::env::var(var).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+/// A number setting; the variable `var` overrides it.
+fn setting(s: &Value, var: &str, key: &str) -> usize {
+    std::env::var(var).ok().and_then(|v| v.parse().ok()).or_else(|| s[key].as_u64().map(|n| n as usize)).unwrap_or(0)
 }
 
 /// User turns and tool calls since the last review of each kind, per thread.
@@ -72,8 +74,8 @@ fn change(call: &Value) -> Option<String> {
 }
 
 /// The chat line about what a review saved.
-fn notice(changes: &[String]) -> Option<String> {
-    let mode = std::env::var("AUGUST_REVIEW_NOTIFY").unwrap_or_default();
+fn notice(changes: &[String], s: &Value) -> Option<String> {
+    let mode = std::env::var("AUGUST_REVIEW_NOTIFY").ok().or_else(|| s["notify"].as_str().map(String::from)).unwrap_or_default();
     if changes.is_empty() || mode == "off" {
         return None;
     }
@@ -100,7 +102,8 @@ async fn after_turn(august: August, counters: Arc<Mutex<HashMap<String, Counters
     if !visible || data["status"] != "ok" || std::env::var("AUGUST_REVIEW").is_ok_and(|v| v == "off") {
         return Ok(());
     }
-    let (every, after) = (setting("AUGUST_REVIEW_MEMORY_EVERY", 10), setting("AUGUST_REVIEW_SKILLS_AFTER", 15));
+    let s = august.settings().await?;
+    let (every, after) = (setting(&s, "AUGUST_REVIEW_MEMORY_EVERY", "memory_every"), setting(&s, "AUGUST_REVIEW_SKILLS_AFTER", "skills_after"));
     let (memory, skills) = {
         let mut all = counters.lock().unwrap();
         let c = all.entry(ctx.key()).or_default();
@@ -143,7 +146,7 @@ async fn after_turn(august: August, counters: Arc<Mutex<HashMap<String, Counters
     }
     let changes: Vec<String> = out["toolCalls"].as_array().into_iter().flatten().filter_map(change).collect();
     eprintln!("review: {}", if changes.is_empty() { "nothing to save".into() } else { changes.join("; ") });
-    if let Some(note) = notice(&changes) {
+    if let Some(note) = notice(&changes, &s) {
         ctx.send(&note).await?;
     }
     Ok(())
@@ -153,6 +156,20 @@ async fn after_turn(august: August, counters: Arc<Mutex<HashMap<String, Counters
 async fn main() {
     let august = August::new();
     august.needs(&["turns"]);
+    august.describe(
+        "Learns after turns: saves memory facts and skills in the background",
+        "Every `memory_every` user turns and after `skills_after` tool calls, a fork of the \
+         conversation that may only use the memory and skill tools reviews it and saves what is \
+         worth keeping, without asking; `notify` says what changed in the chat.",
+    );
+    august.settings_schema(json!({
+        "type": "object",
+        "properties": {
+            "memory_every": {"type": "integer", "default": 10, "description": "User turns between memory reviews (0: never)"},
+            "skills_after": {"type": "integer", "default": 15, "description": "Tool calls after which skills are reviewed (0: never)"},
+            "notify": {"type": "string", "enum": ["off", "on", "verbose"], "default": "on", "description": "What the chat is told about saved changes"},
+        },
+    }));
     let counters: Arc<Mutex<HashMap<String, Counters>>> = Arc::default();
     let me = august.clone();
     august.on("turn_end", move |data, ctx| {

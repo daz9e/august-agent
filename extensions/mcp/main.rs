@@ -442,6 +442,10 @@ async fn main() {
 }
 
 async fn serve(august: August) {
+    august.describe(
+        "Tools of MCP servers, as `mcp_<server>_<tool>`",
+        "Servers listed in `$AUGUST_HOME/mcp.json` (stdio `command` or HTTP `url`) are connected at start; a crashed stdio server is restarted up to 3 times. /mcp shows them.",
+    );
     let home = august.env("AUGUST_HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(august.env("HOME").unwrap_or_default()).join(".august"));
     let config_path = home.join("mcp.json");
     let status: Status = Arc::default();

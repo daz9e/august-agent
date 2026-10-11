@@ -185,6 +185,10 @@ async fn tick(august: &August) -> Result<()> {
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let august = August::new();
+    august.describe(
+        "Scheduled tasks: reminders, recurring jobs and checks",
+        "`schedule_task` stores a task; when due, it runs as a quiet turn in its chat (with its skills and script output) and only the final reply is sent, unless it is [SILENT].",
+    );
     august.needs(&["turns", "messaging", "tools"]);
     august.register_prompt_section("tasks", SECTION);
 

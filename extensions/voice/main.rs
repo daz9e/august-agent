@@ -1,47 +1,34 @@
 //! Voice notes and audio files are transcribed for the agent via an OpenAI-compatible
-//! `POST {base}/audio/transcriptions`: `AUGUST_TRANSCRIBE_URL` (e.g. Groq) with
-//! `AUGUST_TRANSCRIBE_API_KEY`, else OpenAI with that key or the OpenAI provider's key
-//! (only when it points at OpenAI itself). `AUGUST_TRANSCRIBE_MODEL` defaults to whisper-1.
+//! `POST {url}/audio/transcriptions`. Settings `url` (default OpenAI; e.g. Groq), `key` and
+//! `model` (default whisper-1); `AUGUST_TRANSCRIBE_URL`, `AUGUST_TRANSCRIBE_API_KEY` and
+//! `AUGUST_TRANSCRIBE_MODEL` override them. Against OpenAI itself, `OPENAI_API_KEY` stands
+//! in for a missing key.
 
 use anyhow::{Context, Result, bail};
 use august_ext::August;
 use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 const OPENAI_URL: &str = "https://api.openai.com/v1";
 const TIMEOUT: Duration = Duration::from_secs(100);
 
-/// The OpenAI provider's key, if it talks to OpenAI itself.
-fn openai_key(august: &August) -> Option<String> {
-    let env = |k: &str| august.env(k);
-    let home = env("AUGUST_HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(env("HOME").unwrap_or_default()).join(".august"));
-    let stored: Value = std::fs::read_to_string(home.join("credentials.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-    let stored = &stored["openai"];
-    let base = env("OPENAI_BASE_URL").or_else(|| stored["base_url"].as_str().map(String::from)).unwrap_or_else(|| OPENAI_URL.into());
-    if base != OPENAI_URL {
-        return None;
-    }
-    env("OPENAI_API_KEY").or_else(|| stored["key"].as_str().map(String::from))
-}
-
 async fn transcribe(august: &August, http: &reqwest::Client, path: &Path, mime: &str) -> Result<String> {
-    let env = |k: &str| august.env(k);
-    let (base, key) = match env("AUGUST_TRANSCRIBE_URL") {
-        Some(url) => (url, env("AUGUST_TRANSCRIBE_API_KEY").unwrap_or_default()),
-        None => {
-            let key = env("AUGUST_TRANSCRIBE_API_KEY").or_else(|| openai_key(august)).filter(|k| !k.is_empty()).context(
-                "transcription is not configured (set AUGUST_TRANSCRIBE_API_KEY or OPENAI_API_KEY, \
-                 or AUGUST_TRANSCRIBE_URL for another OpenAI-compatible service)",
-            )?;
-            (OPENAI_URL.to_string(), key)
-        }
-    };
+    let s = august.settings().await?;
+    let pick = |var: &str, key: &str| august.env(var).or_else(|| s[key].as_str().filter(|v| !v.is_empty()).map(String::from));
+    let base = pick("AUGUST_TRANSCRIBE_URL", "url").unwrap_or_else(|| OPENAI_URL.into());
+    let mut key = pick("AUGUST_TRANSCRIBE_API_KEY", "key").unwrap_or_default();
+    if base.trim_end_matches('/') == OPENAI_URL {
+        key = Some(key).filter(|k| !k.is_empty()).or_else(|| august.env("OPENAI_API_KEY")).context(
+            "transcription is not configured: set the voice extension's `key` (an OpenAI key), or `url` \
+             and `key` for another OpenAI-compatible service such as Groq",
+        )?;
+    }
     let bytes = tokio::fs::read(path).await.with_context(|| format!("could not read {}", path.display()))?;
     let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "audio".into());
     let part = reqwest::multipart::Part::bytes(bytes).file_name(name).mime_str(mime)?;
     let form = reqwest::multipart::Form::new()
-        .text("model", env("AUGUST_TRANSCRIBE_MODEL").unwrap_or_else(|| "whisper-1".into()))
+        .text("model", pick("AUGUST_TRANSCRIBE_MODEL", "model").unwrap_or_else(|| "whisper-1".into()))
         .part("file", part);
     let mut req = http.post(format!("{}/audio/transcriptions", base.trim_end_matches('/'))).multipart(form);
     if !key.is_empty() {
@@ -66,6 +53,19 @@ async fn main() {
 }
 
 async fn serve(august: August) {
+    august.describe(
+        "Transcribes voice notes and audio files for the agent",
+        "Audio saved by `attachments` is sent to an OpenAI-compatible transcription endpoint \
+         (settings `url`, `key`, `model`); the transcript joins the message text.",
+    );
+    august.settings_schema(json!({
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "default": OPENAI_URL, "description": "OpenAI-compatible API with /audio/transcriptions, e.g. https://api.groq.com/openai/v1"},
+            "key": {"type": "string", "secret": true, "description": "API key for `url` (OpenAI: OPENAI_API_KEY stands in)"},
+            "model": {"type": "string", "default": "whisper-1", "description": "Transcription model, e.g. whisper-large-v3-turbo on Groq"},
+        },
+    }));
     let http = reqwest::Client::builder().timeout(TIMEOUT).build().expect("http client");
     let workspace = august.workspace().clone();
     let me = august.clone();

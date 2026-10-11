@@ -149,6 +149,10 @@ fn provide(august: &August, id: &str, label: &str) {
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let august = August::new();
+    august.describe(
+        "OpenCode Zen and OpenCode Go models",
+        "Providers `opencode` and `opencode-go` with one key (/login opencode or OPENCODE_API_KEY); each model's wire format comes from models.dev unless `format` forces one.",
+    );
     august.settings_schema(json!({
         "type": "object",
         "properties": {

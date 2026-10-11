@@ -229,6 +229,10 @@ fn edit_skill(input: &Value) -> Result<String> {
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let august = August::new();
+    august.describe(
+        "Skills: how-tos the agent loads on demand and writes itself",
+        "Skills live in `$AUGUST_HOME/skills/<name>/SKILL.md`; their names and descriptions are in the system prompt, `load_skill` reads one, `save_skill`/`edit_skill` change them.",
+    );
     august.register_prompt_section("skills", &section());
     // Skills added or changed by hand show up in the next conversation.
     let a = august.clone();

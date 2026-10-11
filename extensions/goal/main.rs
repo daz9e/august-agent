@@ -1,5 +1,6 @@
 //! `/goal <text>`: after every turn a separate judging call checks the goal; while it isn't
-//! reached the chat keeps working on it, up to AUGUST_GOAL_TURNS turns (default 20).
+//! reached the chat keeps working on it, up to `max_turns` turns (default 20;
+//! AUGUST_GOAL_TURNS overrides it).
 //! Goals live in memory: a restart, /goal clear, /new or /stop drops them.
 
 use august_ext::{August, Ctx};
@@ -29,7 +30,7 @@ struct Goals {
 type Shared = Arc<Mutex<Goals>>;
 
 /// After a turn: asks the model whether the goal is reached, then reports or continues.
-async fn judge(goals: Shared, max_turns: u32, data: Value, ctx: Ctx) -> anyhow::Result<()> {
+async fn judge(august: &August, goals: Shared, data: Value, ctx: Ctx) -> anyhow::Result<()> {
     let k = ctx.key();
     let Some(goal) = goals.lock().unwrap().by_chat.get(&k).cloned() else { return Ok(()) };
     if data["unattended"] == true || data["status"] == "cancelled" {
@@ -41,6 +42,7 @@ async fn judge(goals: Shared, max_turns: u32, data: Value, ctx: Ctx) -> anyhow::
         return ctx.send(&format!("⏸ Goal paused: the last turn failed ({why}). Set it again with /goal to continue.")).await.map(drop);
     }
     let reply = data["reply"].as_str().unwrap_or_default();
+    let max_turns = august.env("AUGUST_GOAL_TURNS").and_then(|v| v.parse().ok()).or(august.settings().await?["max_turns"].as_u64()).filter(|&n| n > 0).unwrap_or(20) as u32;
     let verdict = match ctx.llm(&format!("Goal:\n{}\n\nThe assistant's latest reply:\n{reply}", goal.text), Some(JUDGE)).await {
         Ok(v) => v.trim().to_string(),
         Err(e) => {
@@ -92,9 +94,17 @@ async fn main() {
 }
 
 async fn serve(august: August) {
-    let max_turns: u32 = august.env("AUGUST_GOAL_TURNS").and_then(|v| v.parse().ok()).filter(|&n| n > 0).unwrap_or(20);
     let goals: Shared = Arc::default();
     august.needs(&["llm", "messaging"]);
+    august.describe(
+        "/goal: keeps the chat working until a goal is reached",
+        "After each turn of a chat with a goal, a separate model call judges whether it is reached; \
+         if not, it prompts the chat to go on, up to `max_turns` turns. /goal clear, /stop and /new drop it.",
+    );
+    august.settings_schema(serde_json::json!({
+        "type": "object",
+        "properties": {"max_turns": {"type": "integer", "default": 20, "description": "Turns a goal may take before it is paused"}},
+    }));
 
     let g = goals.clone();
     august.register_command("goal", "Keep working until a goal is reached (/goal clear to stop)", move |args, ctx| {
@@ -142,9 +152,10 @@ async fn serve(august: August) {
             Ok(None)
         }
     });
+    let me = august.clone();
     august.on("turn_end", move |data, ctx| {
-        let goals = goals.clone();
-        async move { judge(goals, max_turns, data, ctx).await.map(|_| None) }
+        let (august, goals) = (me.clone(), goals.clone());
+        async move { judge(&august, goals, data, ctx).await.map(|_| None) }
     });
     august.run().await;
 }

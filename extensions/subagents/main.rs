@@ -31,6 +31,10 @@ async fn main() {
 }
 
 async fn serve(august: August) {
+    august.describe(
+        "The `delegate_task` tool: background sub-agents",
+        "A sub-agent runs in a fresh conversation without messaging, memory, skill or scheduling tools; its report comes back to the chat as a new message. /stop and /new drop running ones.",
+    );
     august.needs(&["turns", "messaging"]);
     let count = Arc::new(AtomicU64::new(0));
     let running: Running = Arc::default();

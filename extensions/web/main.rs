@@ -1,5 +1,5 @@
-//! `web_fetch` and `web_search`: read a page as text, search via Brave (BRAVE_API_KEY) or a
-//! DuckDuckGo HTML scrape.
+//! `web_fetch` and `web_search`: read a page as text, search via Brave (setting `brave_key`,
+//! or BRAVE_API_KEY) or a DuckDuckGo HTML scrape.
 
 use anyhow::{Result, anyhow, bail};
 use august_ext::{August, str_arg, truncate};
@@ -175,7 +175,7 @@ async fn duckduckgo(http: &reqwest::Client, url: &str, query: &str) -> Result<Ve
             Err(e) => last = e,
         }
     }
-    bail!("{last:#}; DuckDuckGo search is unreliable, set BRAVE_API_KEY to use the Brave Search API")
+    bail!("{last:#}; DuckDuckGo search is unreliable, set the web extension's `brave_key` to use the Brave Search API")
 }
 
 fn parse_duckduckgo(html: &str) -> Result<Vec<Hit>> {
@@ -225,7 +225,17 @@ async fn main() {
 
 async fn serve(august: August) {
     let http = reqwest::Client::builder().user_agent(UA).timeout(TIMEOUT).build().expect("http client");
-    let key = august.env("BRAVE_API_KEY");
+    august.describe(
+        "The `web_fetch` and `web_search` tools",
+        "Pages are fetched and turned into light Markdown; search goes to Brave with `brave_key`, \
+         else to a DuckDuckGo HTML scrape.",
+    );
+    august.settings_schema(json!({
+        "type": "object",
+        "properties": {
+            "brave_key": {"type": "string", "secret": true, "description": "Brave Search API key; without one, DuckDuckGo is scraped (BRAVE_API_KEY stands in)"},
+        },
+    }));
     let brave_url = august.env("BRAVE_API_URL").unwrap_or_else(|| "https://api.search.brave.com/res/v1/web/search".into());
     let ddg_url = august.env("DUCKDUCKGO_URL").unwrap_or_else(|| "https://html.duckduckgo.com/html/".into());
 
@@ -251,6 +261,7 @@ async fn serve(august: August) {
         },
     );
 
+    let me = august.clone();
     august.register_tool(
         "web_search",
         "Search the web. Returns titles, URLs and snippets; use web_fetch to read a result.",
@@ -261,9 +272,11 @@ async fn serve(august: August) {
             "additionalProperties": false,
         }),
         move |input, _| {
-            let (http, key, brave_url, ddg_url) = (http.clone(), key.clone(), brave_url.clone(), ddg_url.clone());
+            let (august, http, brave_url, ddg_url) = (me.clone(), http.clone(), brave_url.clone(), ddg_url.clone());
             async move {
                 let query = str_arg(&input, "query");
+                let set = august.settings().await?["brave_key"].as_str().filter(|k| !k.is_empty()).map(String::from);
+                let key = august.env("BRAVE_API_KEY").or(set);
                 let hits = match key {
                     Some(key) => brave(&http, &brave_url, query, &key).await?,
                     None => duckduckgo(&http, &ddg_url, query).await?,

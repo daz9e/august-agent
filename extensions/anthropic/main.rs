@@ -129,6 +129,10 @@ fn provide(august: &August, settings: &Value, id: &str, label: &str, default_mod
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let august = August::new();
+    august.describe(
+        "Claude models through the Anthropic API, and other Anthropic-compatible endpoints",
+        "Provider `anthropic` (key: /login anthropic or ANTHROPIC_API_KEY) and one provider per entry of `endpoints`.",
+    );
     august.settings_schema(json!({
         "type": "object",
         "properties": {

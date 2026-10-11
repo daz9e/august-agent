@@ -697,6 +697,10 @@ async fn main() {
 }
 
 async fn serve(august: August) {
+    august.describe(
+        "The Telegram messenger",
+        "Connects the bot to August: chats and forum topics become threads, with buttons, files, voice notes, reactions and edits.",
+    );
     august.needs(&["config"]);
     august.settings_schema(json!({"properties": {
         "allowed": {"type": "array", "items": {"type": "integer"}, "default": [], "description": "Telegram user ids allowed to talk to the bot (/login telegram pairs one)"},

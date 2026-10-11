@@ -155,6 +155,10 @@ fn infos(ids: Vec<String>) -> Vec<ModelInfo> {
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let august = August::new();
+    august.describe(
+        "Models billed to the user's ChatGPT plan",
+        "Providers `chatgpt` (Responses API, sign in with ChatGPT) and `chatgpt-codex` (Codex login); /login chatgpt runs the browser sign-in and keeps the tokens as secrets.",
+    );
     AUGUST.set(august.clone()).ok();
     august.register_provider(
         "chatgpt",

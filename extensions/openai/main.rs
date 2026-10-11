@@ -116,6 +116,10 @@ fn provide(august: &August, settings: &Value, id: &str, label: &str, default_mod
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let august = August::new();
+    august.describe(
+        "Models behind OpenAI-compatible APIs (OpenAI, OpenRouter, Ollama, ...)",
+        "Provider `openai` (key: /login openai or OPENAI_API_KEY) and one provider per entry of `endpoints`.",
+    );
     august.settings_schema(json!({
         "type": "object",
         "properties": {

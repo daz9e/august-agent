@@ -14,6 +14,10 @@ async fn main() {
 }
 
 async fn serve(august: August) {
+    august.describe(
+        "The `clarify` tool: ask the user to pick between options",
+        "Sends a question with buttons in the thread and waits up to 10 minutes; refused in turns nobody watches.",
+    );
     august.needs(&["messaging"]);
     august.register_tool(
         "clarify",

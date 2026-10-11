@@ -78,6 +78,10 @@ async fn main() {
 }
 
 async fn serve(august: August) {
+    august.describe(
+        "The `bash`, `read`, `write` and `edit` tools in the workspace",
+        "Commands run in the workspace with a 120 s timeout; file paths may not leave it.",
+    );
     let ws = august.workspace().canonicalize().unwrap_or_else(|_| august.workspace().clone());
 
     let dir = ws.clone();

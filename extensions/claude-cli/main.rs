@@ -244,6 +244,10 @@ fn call_id() -> String {
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let august = August::new();
+    august.describe(
+        "Claude Pro/Max through the local Claude Code CLI",
+        "Provider `claude-cli` runs one `claude -p` per model call with its own tools off; August's tools are described in the prompt and called through `<tool_call>` text.",
+    );
     // Aliases the CLI resolves to the latest model of each family.
     let models = || ["opus", "sonnet", "haiku"].map(|id| ModelInfo { id: id.into(), context_window: Some(200_000) }).to_vec();
     august.register_provider(

@@ -1,6 +1,6 @@
 //! `compaction`: keeps the conversation inside the model's context window. Before a model
-//! call whose context has grown past the limit (`AUGUST_CONTEXT_TOKENS`, else 80% of the
-//! model's window, else 100k tokens) it trims old tool output and images, then summarises
+//! call whose context has grown past the limit (setting `context_tokens` or
+//! `AUGUST_CONTEXT_TOKENS`, else 80% of the model's window, else 100k tokens) it trims old tool output and images, then summarises
 //! older messages in fixed sections and hands the core the shorter history (`context` →
 //! `history`); a later compaction updates that summary instead of summarising it again. A
 //! context the model refused as too long is compacted and tried again (`llm_error`), and
@@ -52,10 +52,10 @@ struct Conv {
 }
 
 impl Conv {
-    fn of(data: &Value, messages: &Value) -> Result<Self> {
+    /// `set`: the limit the user set, if any.
+    fn of(data: &Value, messages: &Value, set: Option<usize>) -> Result<Self> {
         let messages = messages.as_array().into_iter().flatten().map(Message::from_json).collect::<Option<Vec<_>>>();
         let Some(messages) = messages else { bail!("malformed messages") };
-        let set = std::env::var("AUGUST_CONTEXT_TOKENS").ok().and_then(|v| v.parse().ok());
         let window = data["window"].as_u64().map(|w| w as usize * 4 / 5);
         Ok(Self {
             messages,
@@ -238,6 +238,12 @@ fn transcript(msgs: &[Message]) -> String {
     format!("[earlier part omitted]\n{}", &text[from..])
 }
 
+/// The limit the user set: `AUGUST_CONTEXT_TOKENS`, else the `context_tokens` setting.
+async fn limit(august: &August) -> Option<usize> {
+    let set = august.settings().await.ok().and_then(|s| s["context_tokens"].as_u64()).map(|n| n as usize);
+    august.env("AUGUST_CONTEXT_TOKENS").and_then(|v| v.parse().ok()).or(set).filter(|&n| n > 0)
+}
+
 fn history(conv: &Conv) -> Value {
     Value::Array(conv.messages.iter().map(Message::to_json).collect())
 }
@@ -246,6 +252,16 @@ fn history(conv: &Conv) -> Value {
 async fn main() {
     let august = August::new();
     august.needs(&["sessions", "llm"]);
+    august.describe(
+        "Keeps conversations inside the model's context window by summarising older messages",
+        "Past `context_tokens` (else 80% of the model's window) it trims old tool output and \
+         images, then summarises older messages before the model call; /compact does it now. \
+         Hooks `compaction:before` may cancel or write the summary.",
+    );
+    august.settings_schema(json!({
+        "type": "object",
+        "properties": {"context_tokens": {"type": "integer", "description": "Compact past this many tokens (default: 80% of the model's window)"}},
+    }));
     august.define_event(
         "before",
         "Older messages are about to be summarised; return {cancel: true} or {summary}",
@@ -257,11 +273,11 @@ async fn main() {
     august.hook_timeout("context", Duration::from_secs(600));
     let retry_at: RetryAt = Arc::default();
 
-    let retry = retry_at.clone();
+    let (retry, me) = (retry_at.clone(), august.clone());
     august.on("context", move |data, ctx| {
-        let retry = retry.clone();
+        let (retry, august) = (retry.clone(), me.clone());
         async move {
-            let mut conv = Conv::of(&data, &data["messages"])?;
+            let mut conv = Conv::of(&data, &data["messages"], limit(&august).await)?;
             // Refused as too long: compact whatever the estimate says.
             let reason = if data["error"]["kind"] == "context_too_long" { "overflow" } else { "threshold" };
             match compact(&ctx, &retry, &mut conv, reason).await {
@@ -284,12 +300,12 @@ async fn main() {
         retry.lock().unwrap().remove(&ctx.key());
         async { Ok(None) }
     });
-    let retry = retry_at.clone();
+    let (retry, me) = (retry_at.clone(), august.clone());
     august.register_command("compact", "Summarise older messages to free up context", move |_, ctx| {
-        let retry = retry.clone();
+        let (retry, august) = (retry.clone(), me.clone());
         async move {
             let live = ctx.call("messages", json!({})).await?;
-            let mut conv = Conv::of(&live, &live["messages"])?;
+            let mut conv = Conv::of(&live, &live["messages"], limit(&august).await)?;
             Ok(Some(match compact(&ctx, &retry, &mut conv, "manual").await {
                 Ok(None) => "Nothing to compact yet.".into(),
                 Ok(Some((before, after))) => {

@@ -129,6 +129,10 @@ async fn main() {
 }
 
 async fn serve(august: August) {
+    august.describe(
+        "Asks the user before risky tool calls",
+        "Bash commands outside `safe_commands` (after a judging model call, when `judge` is on), skill and extension changes, settings changes, scripted tasks, browser uploads and changing core operations wait for Allow/Deny in the thread; no answer in 5 minutes denies.",
+    );
     august.needs(&["messaging", "llm"]);
     august.settings_schema(json!({
         "type": "object",
