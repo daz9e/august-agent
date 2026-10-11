@@ -555,8 +555,9 @@ declare module "august" {
     };
   }
 
-  /** An account signed in to with an API key: August asks for it (the message is deleted),
-   *  runs `check` (throw to reject it) and keeps it as secret `id`. */
+  /** An account signed in to with an API key: `/login` asks for it (the message is deleted),
+   *  runs `check` (throw to reject it) and keeps it as secret `id`. On start the SDK tells
+   *  August how it stands (`env` set, a key kept, or neither). */
   export interface KeyAccount {
     id: string;
     label?: string;

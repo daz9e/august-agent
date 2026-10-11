@@ -73,8 +73,6 @@ function manifest() {
       id: a.id,
       label: a.label ?? a.id,
       providers: a.providers ?? [],
-      key: a.key ? { label: a.key.label ?? "API key", env: a.key.env ?? null } : null,
-      login: typeof a.login === "function",
     })),
   };
 }
@@ -92,6 +90,19 @@ function loginSteps(session: number) {
     /** The redirect's query parameters (or those of the address the user pastes). */
     waitCallback: (opts: { timeout?: number } = {}): Promise<Record<string, string>> => step("login_wait", { timeout_ms: opts.timeout ?? 300_000 }),
   };
+}
+
+/** Tells August how the key accounts stand: a variable stands in for the key, a key is kept,
+ * or neither. */
+async function reportKeys() {
+  for (const a of accounts.values()) {
+    if (!a.key) continue;
+    const env = a.key.env && process.env[a.key.env] ? a.key.env : null;
+    const kept = env ? null : await call("secret_get", { key: a.id }).catch(() => undefined);
+    if (kept === undefined) continue;
+    const status = env || kept ? "connected" : "none";
+    call("account_update", { account: a.id, status, who: env ? `key from $${env}` : null }).catch(() => {});
+  }
 }
 
 /** After startup, tells August what changed (once per tick, however many calls). */
@@ -221,13 +232,14 @@ const api = {
     changed();
   },
   /** Something the user signs in to, through August (`/login`): `{id, label, providers,
-   * key: {label, env}, check(key)}` for an API key August asks for, or `{id, label, providers,
+   * key: {label, env}, check(key)}` for an API key the SDK asks for and keeps, or `{id, label, providers,
    * login(steps) => ({who}), logout()}` for a sign-in of its own (OAuth, codes, ...). */
   registerAccount(account: any) {
     if (!account?.id) throw new Error("registerAccount: id is required");
     if (!account.key && typeof account.login !== "function") throw new Error(`registerAccount("${account.id}"): key or login is required`);
     accounts.set(account.id, account);
     changed();
+    if (started && account.key) reportKeys();
   },
   unregisterAccount(id: string) {
     if (accounts.delete(id)) changed();
@@ -330,12 +342,21 @@ async function handle(method: string, params: any, signal: AbortSignal): Promise
     }
     case "health":
       return healthCheck ? await healthCheck() : { status: "ok" };
-    case "account_check":
     case "login":
     case "logout": {
       const account = accounts.get(params.account);
       if (!account) throw new Error(`no account named ${params.account}`);
-      if (method === "account_check") return account.check ? ((await account.check(params.key)), null) : null;
+      if (account.key) {
+        if (method === "logout") return (await call("secret_set", { key: account.id, value: null }), null);
+        const key = await loginSteps(params.session).ask(`Send your ${account.key.label ?? "API key"} for ${account.label ?? account.id}.`, { secret: true });
+        try {
+          await account.check?.(key);
+        } catch (e) {
+          throw new Error(`the key was not accepted: ${e instanceof Error ? e.message : e}`);
+        }
+        await call("secret_set", { key: account.id, value: key });
+        return { who: null };
+      }
       if (method === "logout") return account.logout ? ((await account.logout()), null) : null;
       const signed = await account.login(loginSteps(params.session));
       return { who: signed?.who ?? null, expires_at: signed?.expiresAt ?? null };
@@ -397,3 +418,4 @@ process.on("uncaughtException", (e) => console.error("uncaught exception:", e));
 
 started = true;
 write({ method: "ready", params: manifest() });
+reportKeys();
