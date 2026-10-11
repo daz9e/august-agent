@@ -17,7 +17,8 @@ builds with cargo instead.
 Then:
 
 ```sh
-august serve                    # run in the background (systemd / launchd)
+august setup                    # run in the background and set it up step by step
+august serve                    # (or just) run in the background (systemd / launchd)
 loginctl enable-linger $USER    # on a server: keep it running after you log out
 august                          # chat in this terminal
 ```
@@ -29,9 +30,13 @@ installer again, then `august restart`.
 ## Develop
 
 ```sh
-cargo build
 cargo test
+./august setup      # `august` from this checkout: builds it, keeps its data in .dev/
+./august reset      # wipe that data; ./august clean also drops the builds
 ```
+
+`./august` rebuilds the extensions on every run and the core when `Cargo.lock` pins another
+commit of it, and runs its own background service, apart from an installed August.
 
 ## Versions
 

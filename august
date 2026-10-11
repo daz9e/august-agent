@@ -1,0 +1,65 @@
+#!/bin/sh
+set -e
+
+# August from this checkout, for development: `./august [command] [args...]` is `august`
+# (`./august setup`, `./august gateway`, `./august`, ...), run from fresh builds with its
+# data in .dev/ instead of ~/.august. Each run:
+# - builds the extensions (cargo build);
+# - builds the core the lockfile pins (august-ext's commit in Cargo.lock) when it changed;
+# - drops built extensions Cargo.toml no longer has (the core would still start them).
+#
+# Own commands:
+#   ./august reset    stop the dev August and wipe its data (.dev/home, .dev/workspace)
+#   ./august clean    reset, then drop the built core and run cargo clean
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+DEV="$ROOT/.dev"
+BIN="$ROOT/target/debug"
+CORE_REPO="daz9e/august-core"
+
+export AUGUST_HOME="$DEV/home"
+export AUGUST_WORKSPACE="$DEV/workspace"
+# Its own background service: `serve`/`setup` must not replace the installed August's.
+export AUGUST_SERVICE_LABEL="dev.august.agent.checkout"
+
+stop() {
+    [ -x "$BIN/august" ] && "$BIN/august" stop >/dev/null 2>&1 || true
+}
+
+case "$1" in
+    reset)
+        stop
+        rm -rf "$DEV/home" "$DEV/workspace"
+        echo "Dev data wiped"
+        exit 0 ;;
+    clean)
+        stop
+        rm -rf "$DEV"
+        cargo clean --manifest-path "$ROOT/Cargo.toml"
+        exit 0 ;;
+esac
+
+cargo build --quiet --manifest-path "$ROOT/Cargo.toml"
+
+# The core at the commit the lockfile pins the SDK to, rebuilt when that changes.
+REV="$(sed -n "s|^source = \"git+https://github.com/${CORE_REPO}[^#]*#\([0-9a-f]*\)\"|\1|p" "$ROOT/Cargo.lock" | head -n 1)"
+[ -n "$REV" ] || { echo "Could not find the core's commit in Cargo.lock"; exit 1; }
+if [ ! -x "$BIN/august" ] || [ "$(cat "$DEV/core-rev" 2>/dev/null)" != "$REV" ]; then
+    echo "Building the core at ${REV%"${REV#???????}"}..."
+    stop
+    cargo install --quiet --locked --force --git "https://github.com/${CORE_REPO}" --rev "$REV" august --root "$DEV/core"
+    # A copy, not a link: the core finds its extensions next to its own path.
+    cp "$DEV/core/bin/august" "$BIN/august"
+    echo "$REV" > "$DEV/core-rev"
+fi
+
+# Extensions removed or renamed in Cargo.toml leave old binaries behind.
+for f in "$BIN"/august-ext-*; do
+    name="${f##*/}"
+    case "$name" in *.*) continue ;; esac
+    grep -q "^name = \"$name\"$" "$ROOT/Cargo.toml" || { echo "Dropping $name (no longer in Cargo.toml)"; rm -f "$f"; }
+done
+
+mkdir -p "$AUGUST_WORKSPACE"
+cd "$ROOT"
+exec "$BIN/august" "$@"
