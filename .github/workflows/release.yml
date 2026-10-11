@@ -1,0 +1,76 @@
+# On a `v*` tag: builds the core (at the commit Cargo.lock pins) and the default
+# extensions for each target, and publishes them as one archive per target, with its
+# sha256, for scripts/install.sh.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest, zig: true }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-latest, zig: true }
+          - { target: x86_64-apple-darwin, os: macos-latest }
+          - { target: aarch64-apple-darwin, os: macos-latest }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: agent
+
+      - name: The core's commit
+        id: core
+        run: echo "rev=$(sed -n 's|^source = "git+https://github.com/daz9e/august-core#\([0-9a-f]*\)"|\1|p' agent/Cargo.lock | head -n 1)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          repository: daz9e/august-core
+          ref: ${{ steps.core.outputs.rev }}
+          path: core
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - if: matrix.zig
+        run: pip3 install ziglang && cargo install --locked cargo-zigbuild
+
+      - name: Build
+        run: |
+          build="cargo build"
+          if [ "${{ matrix.zig }}" = "true" ]; then build="cargo zigbuild"; fi
+          (cd core && $build --locked --release --target ${{ matrix.target }} --bin august)
+          (cd agent && $build --locked --release --target ${{ matrix.target }} --bins)
+
+      - name: Package
+        run: |
+          name="august-${{ matrix.target }}"
+          mkdir "$name"
+          cp core/target/${{ matrix.target }}/release/august "$name/"
+          find agent/target/${{ matrix.target }}/release -maxdepth 1 -type f -name 'august-ext-*' -perm -u+x -exec cp {} "$name/" \;
+          tar -czf "$name.tar.gz" "$name"
+          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: august-${{ matrix.target }}
+          path: august-${{ matrix.target }}.tar.gz*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: august-*.tar.gz*
