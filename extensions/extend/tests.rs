@@ -44,3 +44,61 @@ async fn other_languages_bring_their_own_extension_json() {
     let err = fake.tool("save_extension", json!({"name": "py", "files": {"main.py": "print()"}}), ctx("1")).await.unwrap_err();
     assert!(err.to_string().contains("extension.json"), "{err}");
 }
+
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let ok = std::process::Command::new("git").args(args).current_dir(dir).output().unwrap().status.success();
+    assert!(ok, "git {args:?}");
+}
+
+/// A git repository holding an extension, with one commit.
+fn repo(files: &[(&str, &str)]) -> tempfile::TempDir {
+    let repo = tempfile::tempdir().unwrap();
+    git(repo.path(), &["init", "-q"]);
+    commit(repo.path(), files);
+    repo
+}
+
+fn commit(dir: &std::path::Path, files: &[(&str, &str)]) {
+    for (path, text) in files {
+        std::fs::write(dir.join(path), text).unwrap();
+    }
+    git(dir, &["add", "."]);
+    git(dir, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "c"]);
+}
+
+#[tokio::test]
+async fn an_extension_installed_from_git_is_cloned_started_and_updated() {
+    let (fake, dir) = extend().await;
+    let source = repo(&[("extension.json", r#"{"command": ["./run"]}"#)]);
+    let url = format!("file://{}/weather.git", source.path().display());
+    std::fs::rename(source.path().join(".git"), source.path().join("weather.git")).unwrap();
+    git(source.path(), &["--git-dir", "weather.git", "config", "core.bare", "true"]);
+
+    fake.tool("install_extension", json!({"url": url}), ctx("1")).await.unwrap();
+    let folder = dir.path().join("weather");
+    assert!(folder.join("extension.json").is_file());
+    assert_eq!(fake.calls("extension_enable"), [json!({"name": "weather"})]);
+
+    let err = fake.tool("install_extension", json!({"url": url}), ctx("1")).await.unwrap_err();
+    assert!(err.to_string().contains("already installed"), "{err}");
+
+    let said = fake.tool("extensions", json!({"action": "update", "name": "weather"}), ctx("1")).await.unwrap();
+    assert!(said.contains("up to date"), "{said}");
+    let work = tempfile::tempdir().unwrap();
+    git(work.path(), &["clone", "-q", &url, "."]);
+    commit(work.path(), &[("run", "new")]);
+    git(work.path(), &["push", "-q"]);
+    fake.tool("extensions", json!({"action": "update", "name": "weather"}), ctx("1")).await.unwrap();
+    assert_eq!(std::fs::read_to_string(folder.join("run")).unwrap(), "new");
+    assert_eq!(fake.calls("extension_enable").len(), 2);
+}
+
+#[tokio::test]
+async fn a_repository_without_extension_json_is_not_installed() {
+    let (fake, dir) = extend().await;
+    let source = repo(&[("README.md", "hi")]);
+    let err = fake.tool("install_extension", json!({"url": source.path().to_str().unwrap(), "name": "readme"}), ctx("1")).await.unwrap_err();
+    assert!(err.to_string().contains("extension.json"), "{err}");
+    assert!(!dir.path().join("readme").exists());
+    assert!(fake.calls("extension_enable").is_empty());
+}

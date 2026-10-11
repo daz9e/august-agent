@@ -1,14 +1,17 @@
 //! `extend`: the agent writes extensions for August itself (`save_extension`); the core
-//! starts it and marks it as the agent's. `extensions` lists them and turns them on and off.
+//! starts it and marks it as the agent's. `install_extension` clones one from git instead;
+//! `extensions` lists them, turns them on and off, and updates those from git.
 //! It brings the TypeScript SDK (`extensions/sdk-ts`): the host that runs an `index.ts` under
 //! bun, its types, and the guide, which ships as the `writing-extensions` skill.
 
+mod git;
 #[cfg(test)]
 mod tests;
 
 use anyhow::bail;
 use august_ext::{August, str_arg};
 use serde_json::json;
+use git::git;
 use std::path::{Path, PathBuf};
 
 const HOST: &str = include_str!("../sdk-ts/host.ts");
@@ -33,7 +36,7 @@ async fn serve(august: August) {
     if let Err(e) = write_sdk(&host, &dir, &skills) {
         eprintln!("could not write the TypeScript SDK: {e:#}");
     }
-    let me = august.clone();
+    let (me, root) = (august.clone(), dir.clone());
     august.register_tool(
         "save_extension",
         "Create or replace an extension that adds tools, slash commands or hooks to August \
@@ -54,7 +57,7 @@ async fn serve(august: August) {
             "additionalProperties": false
         }),
         move |input, _| {
-            let (august, folder, host) = (me.clone(), dir.join(str_arg(&input, "name")), host.clone());
+            let (august, folder, host) = (me.clone(), root.join(str_arg(&input, "name")), host.clone());
             async move {
                 let name = str_arg(&input, "name");
                 if !valid_name(name) {
@@ -89,50 +92,85 @@ async fn serve(august: August) {
                     std::fs::create_dir_all(file.parent().unwrap_or(&folder))?;
                     std::fs::write(&file, content)?;
                 }
-                let started = august.call("extension_enable", json!({"name": name})).await;
-                let status = match started {
-                    Ok(status) => status,
-                    Err(e) => {
-                        let log = august.call("extension_logs", json!({"name": name, "lines": 30})).await.unwrap_or_default();
-                        let path = PathBuf::from(august.env("AUGUST_HOME").unwrap_or_default()).join(format!("logs/extensions/{name}.log"));
-                        bail!("saved, but it failed to start:\n{e:#}\n\nIts log ({}):\n{}", path.display(), log.as_str().unwrap_or_default());
-                    }
-                };
-                let list = august.call("extensions", json!({})).await?;
-                let undescribed = list.as_array().into_iter().flatten().any(|e| e["name"] == name && e["summary"].as_str().unwrap_or_default().is_empty());
-                if undescribed {
-                    august.call("extension_disable", json!({"name": name})).await?;
-                    bail!("saved, but it doesn't describe itself, so it was turned off: give it a summary (`august.describe(summary, details)`, or `summary` in its ready message) and save again");
-                }
+                let status = start(&august, name).await.map_err(|e| anyhow::anyhow!("saved, but {e:#}"))?;
                 let saved: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
-                Ok(format!("saved {} in {} and started it.\n{}", saved.join(", "), folder.display(), status.as_str().unwrap_or_default()))
+                Ok(format!("saved {} in {} and started it.\n{status}", saved.join(", "), folder.display()))
             }
         },
     );
-    let me = august.clone();
+    let (me, root) = (august.clone(), dir.clone());
     august.register_tool(
-        "extensions",
-        "List August's extensions with their state and what they register, or enable or \
-         disable one by name (disabled stays off across restarts).",
+        "install_extension",
+        "Install an extension from a git repository: cloned into August's extensions, set up \
+         (its `extension.json` `setup` steps) and started. Update it later with `extensions` \
+         action `update`.",
         json!({
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["list", "enable", "disable"]},
-                "name": {"type": "string", "description": "The extension, for enable and disable"}
+                "url": {"type": "string", "description": "The repository to clone"},
+                "name": {"type": "string", "description": "lowercase-with-dashes; by default the repository's name"}
+            },
+            "required": ["url"],
+            "additionalProperties": false
+        }),
+        move |input, _| {
+            let (august, root) = (me.clone(), root.clone());
+            async move {
+                let url = str_arg(&input, "url");
+                let guess = url.trim_end_matches('/').rsplit(['/', ':']).next().unwrap_or_default().trim_end_matches(".git").to_lowercase();
+                let name = match str_arg(&input, "name") {
+                    "" => guess.as_str(),
+                    name => name,
+                };
+                if !valid_name(name) {
+                    bail!("`{name}` can't be an extension's name: give `name` (lowercase letters, digits, `-` and `_`, max 64)");
+                }
+                if url.is_empty() || url.starts_with('-') {
+                    bail!("`url` must be a git repository");
+                }
+                let folder = root.join(name);
+                if folder.exists() {
+                    bail!("`{name}` is already installed in {}; update it with `extensions` action `update`", folder.display());
+                }
+                git(&root, &["clone", "--depth", "1", "--", url, name]).await?;
+                if !folder.join("extension.json").is_file() {
+                    std::fs::remove_dir_all(&folder)?;
+                    bail!("{url} has no `extension.json` at its root, so it isn't an August extension; nothing was installed");
+                }
+                let rev = git(&folder, &["rev-parse", "--short", "HEAD"]).await?;
+                let status = start(&august, name).await.map_err(|e| anyhow::anyhow!("installed in {}, but {e:#}", folder.display()))?;
+                Ok(format!("installed {url} ({rev}) in {} and started it.\n{status}", folder.display()))
+            }
+        },
+    );
+    let (me, root) = (august.clone(), dir.clone());
+    august.register_tool(
+        "extensions",
+        "List August's extensions with their state and what they register, enable or disable \
+         one by name (disabled stays off across restarts), or update one installed from git.",
+        json!({
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["list", "enable", "disable", "update"]},
+                "name": {"type": "string", "description": "The extension, for enable, disable and update"}
             },
             "required": ["action"],
             "additionalProperties": false
         }),
         move |input, _| {
-            let august = me.clone();
+            let (august, root) = (me.clone(), root.clone());
             async move {
                 let (action, name) = (str_arg(&input, "action"), str_arg(&input, "name"));
                 match action {
                     "list" => {}
+                    "update" if valid_name(name) => {
+                        let home = PathBuf::from(august.env("AUGUST_HOME").unwrap_or_default());
+                        return git::update(&|op, params| august.call(op, params), &home, &root, name).await;
+                    }
                     "enable" | "disable" if !name.is_empty() => {
                         august.call(&format!("extension_{action}"), json!({"name": name})).await?;
                     }
-                    "enable" | "disable" => bail!("`{action}` needs a `name`"),
+                    "enable" | "disable" | "update" => bail!("`{action}` needs a `name`"),
                     _ => bail!("unknown action `{action}`"),
                 }
                 Ok(serde_json::to_string(&august.call("extensions", json!({})).await?)?)
@@ -181,6 +219,12 @@ async fn serve(august: August) {
         }
     });
     august.run().await;
+}
+
+/// `git::start` through this extension.
+async fn start(august: &August, name: &str) -> anyhow::Result<String> {
+    let home = PathBuf::from(august.env("AUGUST_HOME").unwrap_or_default());
+    git::start(&|op, params| august.call(op, params), &home, name).await
 }
 
 /// Writes the TypeScript host and its types at `host`, and the guide as the
