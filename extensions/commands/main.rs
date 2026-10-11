@@ -127,7 +127,6 @@ async fn command(august: &August, name: &str, args: &str, ctx: &Ctx) -> Result<S
             august.call("config_set", mine(json!({"path": "august.home", "value": ctx.key()}))).await?;
             "🏠 This is the home thread now: extensions report here.".into()
         }
-        "reload" => format!("Extensions reloaded.\n{}", status(&august.call("extensions_reload", mine(json!({}))).await?)),
         _ => unreachable!("not one of ours: {name}"),
     })
 }
@@ -254,6 +253,20 @@ async fn resolve_model(august: &August, ctx: &Ctx, args: &str) -> Result<Option<
     })
 }
 
+/// `/reload`: restarts the messenger this thread talks through too, so the report is sent
+/// once it is back up.
+async fn reload(august: &August, ctx: &Ctx) -> Result<Option<String>> {
+    ctx.send("Reloading extensions…").await?;
+    let report = format!("Extensions reloaded.\n{}", status(&august.call("extensions_reload", mine(json!({}))).await?));
+    for _ in 0..30 {
+        if ctx.send(&report).await.is_ok() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+    Ok(None)
+}
+
 /// `/stop`: "Stopping…", edited to "Stopped." once nothing runs in the thread any more.
 async fn stop(ctx: &Ctx) -> Result<Option<String>> {
     if ctx.call("stop", mine(json!({}))).await?["cancelled"].as_u64().unwrap_or(0) == 0 {
@@ -358,6 +371,7 @@ async fn serve(august: August) {
             async move {
                 match *name {
                     "stop" => stop(&ctx).await,
+                    "reload" => reload(&a, &ctx).await,
                     _ => command(&a, name, &args, &ctx).await.map(Some),
                 }
             }
