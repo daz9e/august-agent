@@ -24,8 +24,9 @@ august                          # chat in this terminal
 ```
 
 In the chat, `/login` signs in to a model provider and `/login telegram` connects a bot.
-`august logs`, `august restart` and `august stop` manage the service. Update by running the
-installer again, then `august restart`.
+`august logs`, `august restart` and `august stop` manage the service. Update with `/update`
+in the chat (also the extensions installed from git), or by running the installer again: it
+asks before updating and offers to restart August.
 
 ## Develop
 

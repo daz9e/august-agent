@@ -149,6 +149,10 @@ name = "august-ext-tools"
 path = "extensions/tools/main.rs"
 
 [[bin]]
+name = "august-ext-update"
+path = "extensions/update/main.rs"
+
+[[bin]]
 name = "august-ext-usage"
 path = "extensions/usage/main.rs"
 

@@ -11,6 +11,7 @@ set -e
 #   --ref <ref>    A version of august-agent, e.g. v0.2.0 (source: also a branch or commit);
 #                  it brings the core version it was built for
 #   -r <ref>       Shorthand for --ref
+#   --no-prompt    Ask nothing: update without asking, don't restart (what /update runs)
 #
 # Releases come from AUGUST_RELEASE_URL (default: this repo's GitHub releases).
 # Binaries go to AUGUST_INSTALL_DIR (default ~/.local/bin), all side by side: `august`
@@ -23,6 +24,7 @@ INSTALL_DIR="${AUGUST_INSTALL_DIR:-$HOME/.local/bin}"
 
 MODE="binary"
 REF=""
+NO_PROMPT=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --binary) MODE="binary"; shift ;;
@@ -31,6 +33,7 @@ while [ $# -gt 0 ]; do
             [ -n "$2" ] || { echo "Missing value for $1"; exit 1; }
             REF="$2"; shift 2 ;;
         --ref=*) REF="${1#*=}"; shift ;;
+        --no-prompt) NO_PROMPT=1; shift ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -151,6 +154,20 @@ install_source() {
 august-core ${CORE_REV}"
 }
 
+# Questions go to the terminal: stdin is this script, piped from curl. Without a terminal
+# (or with --no-prompt) nothing is asked.
+can_ask() { [ -z "$NO_PROMPT" ] && ( true < /dev/tty ) 2>/dev/null; }
+ask() {
+    printf '%s [Y/n] ' "$1"
+    read -r answer < /dev/tty || answer=""
+    case "$answer" in [nN]*) return 1 ;; esac
+}
+
+if [ -x "$INSTALL_DIR/august" ] && can_ask && ! ask "August is already installed in ${INSTALL_DIR}. Update it to ${REF:-the latest version}?"; then
+    echo "Nothing changed."
+    exit 0
+fi
+
 case "$MODE" in
     binary) install_binary ;;
     source) install_source ;;
@@ -171,5 +188,11 @@ Next:
     /login                pick a model provider and sign in
     /login telegram       connect a Telegram bot (token from @BotFather)
 
-Already running? Pick up the new version with: august restart
 EOF
+if [ -S "${AUGUST_HOME:-$HOME/.august}/control.sock" ]; then
+    if can_ask && ask "August is running. Restart it now to run the new version?"; then
+        "$INSTALL_DIR/august" restart
+    else
+        echo "Already running? Pick up the new version with: august restart"
+    fi
+fi
