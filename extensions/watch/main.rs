@@ -1,11 +1,11 @@
-//! `watch`: restarts an extension whose files changed and tells the home thread. It looks at
+//! `watch`: restarts extensions whose files changed and tells the home thread, in one message. It looks at
 //! every extension the core lists that isn't disabled: a user extension's folder in
 //! `$AUGUST_EXTENSIONS`, a default one's `august-ext-<name>` binary next to this one. Those
 //! installed from git are pulled now and then, so an update upstream lands the same way.
 
 use august_ext::August;
 use serde_json::json;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -25,17 +25,18 @@ async fn serve(august: August, every: Duration, bin: PathBuf) {
     august.describe(
         "Restarts an extension when its files change, and says so in the home thread",
         "Every few seconds it checks the files of each enabled extension (a user extension's \
-         folder, a default one's binary). Once a change has settled it restarts that extension \
-         and posts `🔄 <name> updated and restarted` (or why it failed) to the home thread. \
+         folder, a default one's binary). Once changes have settled it restarts those extensions \
+         and posts one `🔄 Updated and restarted: ...` message (and why any failed) to the home thread. \
          Extensions installed from git are `git pull --ff-only`ed about once an hour.",
     );
     let dir = PathBuf::from(august.env("AUGUST_EXTENSIONS").unwrap_or_default());
     let a = august.clone();
     tokio::spawn(async move {
-        let (mut seen, mut changed) = (HashMap::<String, u64>::new(), HashSet::<String>::new());
+        let (mut seen, mut changed) = (HashMap::<String, u64>::new(), BTreeSet::<String>::new());
         for look in 0u32.. {
             let list = a.call("extensions", json!({})).await.unwrap_or_default();
             let names = list.as_array().into_iter().flatten().filter(|e| e["state"] != "disabled").filter_map(|e| e["name"].as_str());
+            let mut moving = false;
             for name in names.filter(|n| *n != ME).map(String::from).collect::<Vec<_>>() {
                 let folder = dir.join(&name);
                 let src = if folder.is_dir() { folder } else { bin.join(format!("august-ext-{name}")) };
@@ -43,15 +44,15 @@ async fn serve(august: August, every: Duration, bin: PathBuf) {
                     git_pull(&src).await;
                 }
                 let now = fingerprint(&src);
-                match seen.insert(name.clone(), now) {
-                    // ponytail: restarts once a change held still for one look, so a file
-                    // being written isn't caught halfway; a slower writer may restart twice.
-                    Some(before) if before != now => {
-                        changed.insert(name);
-                    }
-                    Some(_) if changed.remove(&name) => restart(&a, &name).await,
-                    _ => {}
+                if seen.insert(name.clone(), now).is_some_and(|before| before != now) {
+                    changed.insert(name);
+                    moving = true;
                 }
+            }
+            // ponytail: waits until nothing changed for one look, so a build that relinks
+            // every default binary is one restart and one message; a slower writer may restart twice.
+            if !moving && !changed.is_empty() {
+                restart(&a, std::mem::take(&mut changed)).await;
             }
             tokio::time::sleep(every).await;
         }
@@ -59,13 +60,21 @@ async fn serve(august: August, every: Duration, bin: PathBuf) {
     august.run().await;
 }
 
-async fn restart(august: &August, name: &str) {
-    let text = match august.call("extension_enable", json!({"name": name})).await {
-        Ok(_) => format!("🔄 `{name}` updated and restarted"),
-        Err(e) => format!("⚠️ `{name}` changed, but didn't restart: {e:#}"),
-    };
-    if let Err(e) = august.call("send", json!({"thread": "home", "message": {"text": text}})).await {
-        eprintln!("could not tell the home thread about {name}: {e:#}");
+/// Restarts `names` and tells the home thread in one message.
+async fn restart(august: &August, names: BTreeSet<String>) {
+    let (mut done, mut failed) = (Vec::new(), Vec::new());
+    for name in names {
+        match august.call("extension_enable", json!({"name": name})).await {
+            Ok(_) => done.push(format!("`{name}`")),
+            Err(e) => failed.push(format!("⚠️ `{name}` changed, but didn't restart: {e:#}")),
+        }
+    }
+    let mut lines = failed;
+    if !done.is_empty() {
+        lines.insert(0, format!("🔄 Updated and restarted: {}", done.join(", ")));
+    }
+    if let Err(e) = august.call("send", json!({"thread": "home", "message": {"text": lines.join("\n")}})).await {
+        eprintln!("could not tell the home thread: {e:#}");
     }
 }
 

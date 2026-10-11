@@ -1,5 +1,5 @@
-//! `watch` against a fake core: a changed extension is restarted and announced in the home
-//! thread; untouched and disabled ones are left alone, and a failed restart is reported.
+//! `watch` against a fake core: changed extensions are restarted and announced in one
+//! message to the home thread; untouched and disabled ones are left alone, and a failed restart is reported.
 
 use super::serve;
 use august_ext::FakeAugust;
@@ -32,13 +32,14 @@ async fn a_changed_extension_is_restarted_and_announced() {
     std::fs::write(exts.join("weather").join("index.ts"), "v2 longer").unwrap();
     std::fs::write(exts.join("off").join("index.ts"), "v2 longer").unwrap();
     std::fs::write(bin.join("august-ext-telegram"), "bin v2 longer").unwrap();
-    fake.wait_sent("`weather` updated and restarted").await;
-    fake.wait_sent("`telegram` changed, but didn't restart: it crashed").await;
+    let sent = fake.wait_sent("Updated and restarted").await;
+    assert_eq!(sent.text, "🔄 Updated and restarted: `weather`\n⚠️ `telegram` changed, but didn't restart: it crashed");
     let n = fake.calls("extensions").len();
     fake.wait_call("extensions", n + 3).await;
 
     let restarted: Vec<_> = fake.calls("extension_enable").iter().map(|p| p["name"].clone()).collect();
     assert_eq!(restarted.len(), 2, "{restarted:?}");
     assert!(restarted.contains(&json!("weather")) && restarted.contains(&json!("telegram")));
-    assert!(fake.calls("send").iter().all(|p| p["thread"] == "home"));
+    assert_eq!(fake.calls("send").len(), 1);
+    assert_eq!(fake.calls("send")[0]["thread"], "home");
 }
