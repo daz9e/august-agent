@@ -172,6 +172,21 @@ async fn walks_through_provider_sign_in_model_and_connections() {
 }
 
 #[tokio::test]
+async fn keeping_the_provider_in_use_goes_on_to_the_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = Fake::start(dir.path());
+    let core = core(dir.path());
+    core.call("model_set", json!({"model": "anthropic:claude-a"})).await.unwrap();
+    let ui = Script::new(vec![Some(Answer::Pick(0)), None]); // keep it, then step away
+    wizard(&core, ui.clone(), &dir.path().join("august.sock")).await.unwrap();
+
+    let asked = ui.asked.lock().unwrap().clone();
+    assert_eq!(asked[0].1[0], "Keep anthropic · claude-a");
+    assert!(asked[1].0.starts_with("Which model of anthropic?"), "{asked:?}");
+    assert_eq!(fake.calls("model_set").len(), 1);
+}
+
+#[tokio::test]
 async fn stepping_away_pauses_without_changing_anything() {
     let dir = tempfile::tempdir().unwrap();
     let fake = Fake::start(dir.path());

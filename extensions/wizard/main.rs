@@ -155,7 +155,8 @@ async fn provider(core: &Core, ui: &Arc<dyn Ui>, window: &Path) -> Result<bool> 
         let keep = (!current.is_empty()).then(|| format!("Keep {current} · {}", str(&s["model"])));
         let options = keep.iter().cloned().chain(providers.iter().map(|a| labelled(a))).collect();
         let Some(Answer::Pick(i)) = select(ui, "August thinks with a model. Which provider?", options, false).await else { return Ok(false) };
-        let Some(a) = providers.get(i - keep.is_some() as usize) else { return Ok(true) };
+        // "Keep" (first, when shown) leaves things as they are.
+        let Some(a) = i.checked_sub(keep.is_some() as usize).and_then(|i| providers.get(i)) else { return Ok(true) };
         if a["status"] != "connected" && !sign_in(core, ui, window, a).await? {
             continue;
         }
