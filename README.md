@@ -19,7 +19,6 @@ Then:
 ```sh
 august setup                    # run in the background and set it up step by step
 august serve                    # (or just) run in the background (systemd / launchd)
-loginctl enable-linger $USER    # on a server: keep it running after you log out
 august                          # chat in this terminal
 ```
 

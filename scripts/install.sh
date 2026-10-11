@@ -183,7 +183,7 @@ esac
 cat <<EOF
 
 Next:
-  august serve            start it in the background (on a server, also: loginctl enable-linger \$USER)
+  august serve            start it in the background
   august                  open the chat in this terminal, then:
     /login                pick a model provider and sign in
     /login telegram       connect a Telegram bot (token from @BotFather)
