@@ -1,7 +1,7 @@
 # August agent
 
 An always-on personal agent: [August's core](https://github.com/daz9e/august-core) with its
-default extensions (tools, memory, skills, scheduled tasks, Telegram, a terminal chat, model
+default extensions (tools, memory, skills, scheduled tasks, Telegram, Discord, a terminal chat, model
 providers, ...).
 
 ## Install
@@ -22,7 +22,7 @@ august serve                    # (or just) run in the background (systemd / lau
 august                          # chat in this terminal
 ```
 
-In the chat, `/login` signs in to a model provider and `/login telegram` connects a bot.
+In the chat, `/login` signs in to a model provider and `/login telegram` or `/login discord` connects a bot.
 `august logs`, `august restart` and `august stop` manage the service. Update with `/update`
 in the chat (also the extensions installed from git), or by running the installer again: it
 asks before updating and offers to restart August.

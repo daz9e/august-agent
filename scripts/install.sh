@@ -187,6 +187,7 @@ Next:
   august                  open the chat in this terminal, then:
     /login                pick a model provider and sign in
     /login telegram       connect a Telegram bot (token from @BotFather)
+    /login discord        connect a Discord bot (token from the Developer Portal)
 
 EOF
 if [ -S "${AUGUST_HOME:-$HOME/.august}/control.sock" ]; then
