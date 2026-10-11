@@ -161,6 +161,10 @@ name = "august-ext-voice"
 path = "extensions/voice/main.rs"
 
 [[bin]]
+name = "august-ext-watch"
+path = "extensions/watch/main.rs"
+
+[[bin]]
 name = "august-ext-web"
 path = "extensions/web/main.rs"
 
