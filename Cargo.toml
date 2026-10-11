@@ -158,6 +158,10 @@ name = "august-ext-tools"
 path = "extensions/tools/main.rs"
 
 [[bin]]
+name = "august-ext-uninstall"
+path = "extensions/uninstall/main.rs"
+
+[[bin]]
 name = "august-ext-update"
 path = "extensions/update/main.rs"
 

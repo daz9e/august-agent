@@ -27,6 +27,9 @@ In the chat, `/login` signs in to a model provider and `/login telegram` or `/lo
 in the chat (also the extensions installed from git), or by running the installer again: it
 asks before updating and offers to restart August.
 
+`august uninstall` removes August: it offers a backup (`~/august-backup-<time>.tar.gz`), asks for
+a typed `yes`, then deletes the data and the binaries.
+
 ## Develop
 
 ```sh
