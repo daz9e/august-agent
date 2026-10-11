@@ -83,7 +83,8 @@ fn notice(changes: &[String], s: &Value) -> Option<String> {
         return Some(changes.iter().map(|c| format!("💾 {c}")).collect::<Vec<_>>().join("\n"));
     }
     let memory = changes.iter().any(|c| c.starts_with("remembered") || c.starts_with("forgot"));
-    let mut skills: Vec<&str> = changes.iter().filter_map(|c| c.split('`').nth(1).filter(|_| c.contains("skill"))).collect();
+    let mut skills: Vec<&str> = changes.iter().filter_map(|c| c.rsplit('`').nth(1).filter(|_| c.contains("skill"))).collect();
+    skills.sort_unstable();
     skills.dedup();
     let mut parts = Vec::new();
     if memory {
@@ -154,7 +155,10 @@ async fn after_turn(august: August, counters: Arc<Mutex<HashMap<String, Counters
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    let august = August::new();
+    serve(August::new()).await;
+}
+
+async fn serve(august: August) {
     august.needs(&["turns"]);
     august.describe(
         "Learns after turns: saves memory facts and skills in the background",
@@ -178,3 +182,6 @@ async fn main() {
     });
     august.run().await;
 }
+
+#[cfg(test)]
+mod tests;
