@@ -163,7 +163,8 @@ async fn compact(ctx: &Ctx, retry_at: &RetryAt, conv: &mut Conv, reason: &str) -
 /// Summarises the messages before the kept tail; `Some(from an extension)` if it did.
 async fn summarise_old(ctx: &Ctx, retry_at: &RetryAt, conv: &mut Conv, reason: &str) -> Result<Option<bool>> {
     let Some(cut) = conv.cut_point() else { return Ok(None) };
-    if conv.messages.len() < retry_at.lock().unwrap().get(&ctx.key()).copied().unwrap_or(0) {
+    // Only the automatic one waits: `/compact` and a refused context are always tried.
+    if reason == "threshold" && conv.messages.len() < retry_at.lock().unwrap().get(&ctx.key()).copied().unwrap_or(0) {
         return Ok(None);
     }
     // A summary from an earlier compaction is updated, not summarised again.
