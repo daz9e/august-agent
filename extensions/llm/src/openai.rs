@@ -114,8 +114,10 @@ impl OpenAi {
     }
 }
 
-fn finish_reason(r: Option<&str>) -> StopReason {
+/// Some servers (Gemini's) end a reply that calls tools with `stop`: its calls decide.
+fn finish_reason(r: Option<&str>, calls: bool) -> StopReason {
     match r {
+        _ if calls => StopReason::ToolUse,
         Some("stop") => StopReason::EndTurn,
         Some("tool_calls") | Some("function_call") => StopReason::ToolUse,
         Some("length") => StopReason::MaxTokens,
@@ -191,6 +193,7 @@ impl StreamState {
 
     fn finish(self) -> Completion {
         let mut content = Vec::new();
+        let calls = !self.calls.is_empty();
         if !self.text.is_empty() {
             content.push(Block::Text(self.text));
         }
@@ -202,7 +205,7 @@ impl StreamState {
                 role: Role::Assistant,
                 content,
             },
-            stop_reason: finish_reason(self.finish.as_deref()),
+            stop_reason: finish_reason(self.finish.as_deref(), calls),
             usage: self.usage,
         }
     }
@@ -233,10 +236,13 @@ impl OpenAi {
         let mut body = json!({
             "model": self.model,
             "messages": Self::encode(system, messages),
-            "tools": tools,
             "stream": true,
             "stream_options": {"include_usage": true},
         });
+        // OpenAI refuses an empty `tools` list.
+        if !tools.is_empty() {
+            body["tools"] = json!(tools);
+        }
         crate::merge_options(&mut body, &self.options);
         let mut req = self
             .http
@@ -296,7 +302,7 @@ impl OpenAi {
                 role: Role::Assistant,
                 content,
             },
-            stop_reason: finish_reason(choice["finish_reason"].as_str()),
+            stop_reason: finish_reason(choice["finish_reason"].as_str(), !msg["tool_calls"].as_array().is_none_or(Vec::is_empty)),
             usage: usage_of(&resp["usage"]),
         }
     }
@@ -363,6 +369,7 @@ mod tests {
         let req = server.await.unwrap();
         assert!(req.contains("x-opencode-session: sess-1"), "{req}");
         assert!(req.contains("user-agent: august/"), "{req}");
+        assert!(!req.contains("\"tools\""), "no tools, no empty list: {req}");
     }
 
     #[test]
@@ -387,5 +394,13 @@ mod tests {
         assert_eq!((c.usage.input_tokens, c.usage.output_tokens, c.usage.cache_read_tokens), (5, 3, 2));
         assert!(matches!(&c.message.content[0], Block::Text(t) if t == "Hi there"));
         assert!(matches!(&c.message.content[1], Block::ToolUse { id, input, .. } if id == "c1" && input["a"] == 1));
+    }
+
+    #[test]
+    fn tool_calls_ending_with_stop_are_still_tool_use() {
+        let mut st = StreamState::default();
+        st.chunk(&json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"sh","arguments":"{}"}}]}}]}), &mut |_| {}).unwrap();
+        st.chunk(&json!({"choices":[{"delta":{},"finish_reason":"stop"}]}), &mut |_| {}).unwrap();
+        assert_eq!(st.finish().stop_reason, StopReason::ToolUse);
     }
 }
