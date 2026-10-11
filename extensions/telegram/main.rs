@@ -1,5 +1,5 @@
 //! `telegram`: August in Telegram, as a bot. Long polling, Markdown → HTML, inline buttons
-//! in rows, edits for streaming, uploads as photos or documents, reactions both ways, an
+//! (as many to a row as their labels fit, in pages when there are many), edits for streaming, uploads as photos or documents, reactions both ways, an
 //! allowlist of user ids (others are turned away), groups (a message is addressed when the
 //! bot is mentioned or replied to) and forum topics as threads (`<chat>/<topic>`).
 //!
@@ -36,6 +36,15 @@ const MAX_PHOTO: u64 = 10 * 1024 * 1024;
 const MAX_CAPTION: usize = 1024;
 /// How long pairing waits for the owner's message.
 const PAIR_WAIT: Duration = Duration::from_secs(180);
+/// Width of a row of buttons on a phone, in label columns (each button takes 4 more):
+/// short labels share a row, a long one gets its own.
+const ROW_WIDTH: usize = 32;
+/// Rows of buttons on one page; more turn into pages, turned with ◀ ▶ under them.
+const PAGE_ROWS: usize = 5;
+/// Callback data of the page buttons: their presses stay here, they never reach August.
+const PAGE: &str = "august.page:";
+/// Messages whose pages are remembered, the latest ones.
+const PAGED_KEPT: usize = 64;
 
 // ---------------------------------------------------------------- inbound parsing
 
@@ -260,11 +269,34 @@ struct Telegram {
     polled: Mutex<Option<(std::time::Instant, Option<String>)>>,
     /// While pairing: where a private message from someone not yet allowed goes.
     pairing: Mutex<Option<mpsc::UnboundedSender<(i64, String)>>>,
+    /// The buttons of messages with more than a page of them, by `<chat>:<message>`.
+    paged: Mutex<std::collections::VecDeque<(String, Vec<Vec<Button>>)>>,
 }
 
 impl Telegram {
     fn api(&self) -> Result<Api> {
         self.api.read().unwrap().clone().ok_or_else(|| anyhow!("Telegram is not connected: /login telegram"))
+    }
+
+    /// Keeps the laid-out buttons of message `key` if they take more than a page.
+    fn remember(&self, key: String, rows: Vec<Vec<Button>>) {
+        let mut paged = self.paged.lock().unwrap();
+        paged.retain(|(k, _)| *k != key);
+        if rows.len() > PAGE_ROWS {
+            paged.push_back((key, rows));
+            if paged.len() > PAGED_KEPT {
+                paged.pop_front();
+            }
+        }
+    }
+
+    /// Shows page `page` of the buttons of message `message` in `chat`.
+    async fn turn_page(&self, chat: &Value, message: &Value, page: usize) {
+        let key = format!("{chat}:{message}");
+        let rows = self.paged.lock().unwrap().iter().find(|(k, _)| *k == key).map(|(_, r)| r.clone());
+        let (Some(rows), Ok(api)) = (rows, self.api()) else { return };
+        let params = json!({"chat_id": chat, "message_id": message, "reply_markup": keyboard(&rows, page)});
+        api.call("editMessageReplyMarkup", params).await.ok();
     }
 
     /// Uploads one file (a photo where it can be), with an optional caption; its message id.
@@ -328,14 +360,46 @@ fn target(thread: &str) -> Value {
     params
 }
 
-fn markup(rows: &[Vec<Button>]) -> Option<Value> {
-    (rows.iter().any(|r| !r.is_empty())).then(|| {
-        let rows: Vec<Vec<Value>> = rows
-            .iter()
-            .map(|row| row.iter().map(|b| json!({"text": b.label, "callback_data": b.id})).collect())
-            .collect();
-        json!({"inline_keyboard": rows})
-    })
+/// `rows` laid out by the width of their labels.
+fn layout(rows: &[Vec<Button>]) -> Vec<Vec<Button>> {
+    let mut out = Vec::new();
+    for row in rows {
+        let (mut line, mut width): (Vec<Button>, usize) = (Vec::new(), 0);
+        for b in row {
+            let w = unicode_width::UnicodeWidthStr::width(b.label.as_str()) + 4;
+            if !line.is_empty() && width + w > ROW_WIDTH {
+                out.push(std::mem::take(&mut line));
+                width = 0;
+            }
+            width += w;
+            line.push(b.clone());
+        }
+        if !line.is_empty() {
+            out.push(line);
+        }
+    }
+    out
+}
+
+/// Page `page` of laid-out `rows` as an inline keyboard, with ◀ n/m ▶ when there are more.
+fn keyboard(rows: &[Vec<Button>], page: usize) -> Value {
+    let pages = rows.len().div_ceil(PAGE_ROWS).max(1);
+    let page = page.min(pages - 1);
+    let mut kb: Vec<Vec<Value>> = rows
+        .iter()
+        .skip(page * PAGE_ROWS)
+        .take(PAGE_ROWS)
+        .map(|row| row.iter().map(|b| json!({"text": b.label, "callback_data": b.id})).collect())
+        .collect();
+    if pages > 1 {
+        let nav = |text: String, to: usize| json!({"text": text, "callback_data": format!("{PAGE}{to}")});
+        kb.push(vec![
+            nav("◀".into(), (page + pages - 1) % pages),
+            nav(format!("{}/{pages}", page + 1), page),
+            nav("▶".into(), (page + 1) % pages),
+        ]);
+    }
+    json!({"inline_keyboard": kb})
 }
 
 fn plain(md: &str) -> String {
@@ -349,7 +413,8 @@ fn description() -> Description {
         capabilities: Capabilities {
             markdown: true,
             max_len: MAX_LEN,
-            buttons: 8,
+            // Any number: more than a page are turned with ◀ ▶.
+            buttons: 100,
             edit: true,
             // Telegram allows about one edit per second per chat.
             edit_interval_ms: 1100,
@@ -407,8 +472,9 @@ impl Messenger for Telegram {
         if let Some(to) = message.reply_to.as_deref().and_then(|id| id.parse::<i64>().ok()) {
             params["reply_parameters"] = json!({"message_id": to, "allow_sending_without_reply": true});
         }
-        if let Some(m) = markup(buttons) {
-            params["reply_markup"] = m;
+        let rows = layout(buttons);
+        if !rows.is_empty() {
+            params["reply_markup"] = keyboard(&rows, 0);
         }
         let html_too_long = params["text"].as_str().is_some_and(|t| t.chars().count() > 4096);
         let res = if html_too_long {
@@ -424,12 +490,14 @@ impl Messenger for Telegram {
             }
             other => other?,
         };
-        Ok(sent["message_id"].as_i64().context("no message_id")?.to_string())
+        let id = sent["message_id"].as_i64().context("no message_id")?.to_string();
+        self.remember(format!("{}:{id}", chat_id(chat)), rows);
+        Ok(id)
     }
 
     async fn edit(&self, chat: &str, id: &str, message: &OutMessage) -> Result<()> {
         let api = self.api()?;
-        let (markdown, buttons) = (message.text.as_str(), &message.buttons);
+        let (markdown, rows) = (message.text.as_str(), layout(&message.buttons));
         let mut params = json!({
             "chat_id": chat_id(chat),
             "message_id": id.parse::<i64>().context("bad message id")?,
@@ -437,8 +505,9 @@ impl Messenger for Telegram {
             "parse_mode": "HTML",
             "link_preview_options": {"is_disabled": true},
             // An empty keyboard removes the buttons.
-            "reply_markup": markup(buttons).unwrap_or_else(|| json!({"inline_keyboard": []})),
+            "reply_markup": keyboard(&rows, 0),
         });
+        self.remember(format!("{}:{id}", chat_id(chat)), rows);
         let html_too_long = params["text"].as_str().is_some_and(|t| t.chars().count() > 4096);
         let res = if html_too_long {
             Err(anyhow!("can't parse entities: too long"))
@@ -607,6 +676,13 @@ async fn poll(august: August, tg: Arc<Telegram>, api: Api, bot: Bot) {
             if let Some(callback) = callback {
                 // Stops the button's spinner.
                 api.call("answerCallbackQuery", json!({"callback_query_id": callback})).await.ok();
+            }
+            if let InboundKind::Press { button } = &event.kind
+                && let Some(page) = button.strip_prefix(PAGE)
+            {
+                let m = &u["callback_query"]["message"];
+                tg.turn_page(&m["chat"]["id"], &m["message_id"], page.parse().unwrap_or(0)).await;
+                continue;
             }
             eprintln!("{} ({}): {:?}", event.user.name, event.user.id, event.kind);
             let thread = Thread { messenger: ID.into(), id: event.thread };

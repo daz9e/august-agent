@@ -206,6 +206,30 @@ async fn sent_messages_are_html_with_inline_buttons() {
 }
 
 #[tokio::test]
+async fn many_buttons_fill_rows_by_label_and_turn_in_pages() {
+    let (fake, api) = telegram().await;
+    let buttons: Vec<Value> = (0..14).map(|i| json!({"id": format!("b{i}"), "label": format!("Provider number {i}")})).collect();
+    let short = json!([{"id": "y", "label": "Yes"}, {"id": "n", "label": "No"}]);
+    messenger(&fake, "messenger_send", json!({"thread": "5", "message": {"text": "Pick", "buttons": [short, buttons]}})).await.unwrap();
+    let kb = api.calls("sendMessage")[0]["reply_markup"]["inline_keyboard"].clone();
+    let rows = kb.as_array().unwrap();
+    // Short labels share a row, long ones get one each; five rows a page, then ◀ 1/3 ▶.
+    assert_eq!(rows[0].as_array().unwrap().len(), 2);
+    assert_eq!(rows[1], json!([{"text": "Provider number 0", "callback_data": "b0"}]));
+    assert_eq!(rows.len(), 6);
+    let nav: Vec<&str> = rows[5].as_array().unwrap().iter().map(|b| b["text"].as_str().unwrap()).collect();
+    assert_eq!(nav, ["◀", "1/3", "▶"]);
+
+    // ▶ turns the page in place; the press never reaches August.
+    api.push(json!({"update_id": 1, "callback_query": {"id": "cb1", "from": {"id": OWNER, "first_name": "A"},
+        "message": {"message_id": 42, "chat": {"id": 5, "type": "private"}}, "data": rows[5][2]["callback_data"]}}));
+    let turned = api.wait_call("editMessageReplyMarkup").await;
+    assert_eq!((turned["chat_id"].as_i64(), turned["message_id"].as_i64()), (Some(5), Some(42)));
+    assert_eq!(turned["reply_markup"]["inline_keyboard"][0][0]["callback_data"], "b4");
+    assert!(fake.calls("inbound").is_empty());
+}
+
+#[tokio::test]
 async fn html_telegram_cannot_parse_is_sent_as_plain_text() {
     let (fake, api) = telegram().await;
     let id = messenger(&fake, "messenger_send", json!({"thread": "5", "message": {"text": "**bad**"}})).await.unwrap();
