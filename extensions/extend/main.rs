@@ -2,7 +2,8 @@
 //! starts it and marks it as the agent's. `install_extension` clones one from git instead;
 //! `extensions` lists them, turns them on and off, and updates those from git.
 //! It brings the TypeScript SDK (`extensions/sdk-ts`): the host that runs an `index.ts` under
-//! bun, its types, and the guide, which ships as the `writing-extensions` skill.
+//! bun, its types, and the guide, which ships as the `writing-extensions` skill with the
+//! wire protocol (`PROTOCOL.md`, a copy of august-core's) for extensions in any language.
 
 mod git;
 #[cfg(test)]
@@ -17,6 +18,7 @@ use std::path::{Path, PathBuf};
 const HOST: &str = include_str!("../sdk-ts/host.ts");
 const TYPES: &str = include_str!("../sdk-ts/august.d.ts");
 const GUIDE: &str = include_str!("../sdk-ts/guide.md");
+const PROTOCOL: &str = include_str!("PROTOCOL.md");
 
 fn valid_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= 64 && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
@@ -40,18 +42,20 @@ async fn serve(august: August) {
     august.register_tool(
         "save_extension",
         "Create or replace an extension that adds tools, slash commands or hooks to August \
-         itself. Load the `writing-extensions` skill first for the API. TypeScript: `code` (its \
-         index.ts). Any other language: `files` by path, with `extension.json` ({command, env, \
-         setup}) — `setup` steps build it or install what it needs, August runs them; don't \
-         build by hand. The extension is set up and started right away; the result is what it \
-         registered, or the error and its log to fix. It must describe itself (summary).",
+         itself, in any language. Load the `writing-extensions` skill first for the API. \
+         `files`: every file by path. With `extension.json` ({command, env, setup}) it runs \
+         anything — `setup` steps build it or install what it needs, August runs them; don't \
+         build by hand. Without it, `index.ts` runs with the TypeScript SDK; `code` is a \
+         shortcut for a lone index.ts. The extension is set up and started right away; the \
+         result is what it registered, or the error and its log to fix. It must describe \
+         itself (summary).",
         json!({
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "lowercase-with-dashes"},
                 "code": {"type": "string", "description": "TypeScript: contents of index.ts"},
                 "files": {"type": "object", "additionalProperties": {"type": "string"},
-                          "description": "Any language: file contents by path inside the extension's folder, including extension.json"}
+                          "description": "File contents by path inside the extension's folder: extension.json and the rest, or TypeScript modules around index.ts"}
             },
             "required": ["name"],
             "additionalProperties": false
@@ -63,22 +67,23 @@ async fn serve(august: August) {
                 if !valid_name(name) {
                     bail!("extension names use lowercase letters, digits, `-` and `_` (max 64)");
                 }
-                let files: Vec<(String, String)> = match (input["code"].as_str(), input["files"].as_object()) {
-                    (Some(code), None) => {
-                        let command = json!({"command": ["bun", "run", host.display().to_string(), "index.ts", name]});
-                        vec![("index.ts".into(), code.into()), ("extension.json".into(), serde_json::to_string_pretty(&command)?)]
-                    }
-                    (None, Some(files)) => {
-                        let text = |(p, c): (&String, &serde_json::Value)| Some((p.clone(), c.as_str()?.to_string()));
-                        match files.iter().map(text).collect::<Option<Vec<_>>>() {
-                            Some(files) => files,
-                            None => bail!("every entry of `files` must be the file's text"),
-                        }
-                    }
-                    _ => bail!("give either `code` (TypeScript) or `files` (any language, with extension.json)"),
+                let text = |(p, c): (&String, &serde_json::Value)| Some((p.clone(), c.as_str()?.to_string()));
+                let mut files = match input["files"].as_object().map(|f| f.iter().map(text).collect::<Option<Vec<_>>>()) {
+                    Some(Some(files)) => files,
+                    Some(None) => bail!("every entry of `files` must be the file's text"),
+                    None => vec![],
                 };
-                if !files.iter().any(|(p, _)| p == "extension.json") {
-                    bail!("`files` needs an `extension.json` with the `command` that runs it");
+                if let Some(code) = input["code"].as_str() {
+                    files.retain(|(p, _)| p != "index.ts");
+                    files.push(("index.ts".into(), code.into()));
+                }
+                let has = |path: &str| files.iter().any(|(p, _)| p == path);
+                if !has("extension.json") {
+                    if !has("index.ts") {
+                        bail!("give `files` with an `extension.json` that says how to run it, or a TypeScript `index.ts` (`code`)");
+                    }
+                    let command = json!({"command": ["bun", "run", host.display().to_string(), "index.ts", name]});
+                    files.push(("extension.json".into(), serde_json::to_string_pretty(&command)?));
                 }
                 for (path, _) in &files {
                     let inside = std::path::Path::new(path).components().all(|c| matches!(c, std::path::Component::Normal(_)));
@@ -228,16 +233,18 @@ async fn start(august: &August, name: &str) -> anyhow::Result<String> {
 }
 
 /// Writes the TypeScript host and its types at `host`, and the guide as the
-/// `writing-extensions` skill in `skills`.
+/// `writing-extensions` skill in `skills`, with the protocol and the types beside it.
 fn write_sdk(host: &Path, dir: &Path, skills: &Path) -> anyhow::Result<()> {
     let rt = host.parent().unwrap_or(dir);
     std::fs::create_dir_all(rt)?;
     std::fs::write(host, HOST)?;
     std::fs::write(rt.join("august.d.ts"), TYPES)?;
     std::fs::create_dir_all(skills)?;
-    let about = "How to extend August itself with extensions in TypeScript or any language (tools, slash commands, hooks); read before `save_extension`";
+    let about = "How to extend August itself with extensions in any language, with the TypeScript SDK or the bare protocol (tools, slash commands, hooks, several files and processes); read before `save_extension`";
     let guide = GUIDE.replace("{host}", &host.display().to_string());
-    let text = format!("---\nname: writing-extensions\ndescription: {about}\n---\nExtensions live in {}.\n\n{guide}\n```ts\n{TYPES}```\n", dir.display());
+    let text = format!("---\nname: writing-extensions\ndescription: {about}\n---\nExtensions live in {}.\n\n{guide}", dir.display());
     std::fs::write(skills.join("SKILL.md"), text)?;
+    std::fs::write(skills.join("PROTOCOL.md"), PROTOCOL)?;
+    std::fs::write(skills.join("august.d.ts"), TYPES)?;
     Ok(())
 }

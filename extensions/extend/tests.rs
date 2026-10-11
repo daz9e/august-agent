@@ -1,5 +1,5 @@
-//! `extend` against a fake core: it brings the TypeScript host and the guide, and an
-//! extension saved as TypeScript gets an `extension.json` that runs it through that host.
+//! `extend` against a fake core: it brings the TypeScript host, the guide and the protocol,
+//! and an extension saved as TypeScript gets an `extension.json` that runs it through that host.
 
 use super::serve;
 use august_ext::FakeAugust;
@@ -35,7 +35,20 @@ async fn the_guide_is_a_skill_that_points_at_the_host() {
     let skill = std::fs::read_to_string(dir.path().join(".runtime/skills/writing-extensions/SKILL.md")).unwrap();
     assert!(skill.starts_with("---\nname: writing-extensions\n"));
     assert!(skill.contains(&dir.path().join(".runtime/ts/host.ts").display().to_string()) && !skill.contains("{host}"));
-    assert!(skill.contains("declare module \"august\""));
+    let beside = |file: &str| std::fs::read_to_string(dir.path().join(".runtime/skills/writing-extensions").join(file)).unwrap();
+    assert!(beside("august.d.ts").contains("declare module \"august\""));
+    assert!(beside("PROTOCOL.md").contains("# The August extension protocol"));
+}
+
+#[tokio::test]
+async fn a_typescript_extension_may_have_many_files() {
+    let (fake, dir) = extend().await;
+    let files = json!({"index.ts": "import { w } from './lib/w.ts'; export default w;", "lib/w.ts": "export const w = () => {};"});
+    fake.tool("save_extension", json!({"name": "multi", "files": files}), ctx("1")).await.unwrap();
+    let folder = dir.path().join("multi");
+    assert!(folder.join("lib/w.ts").is_file());
+    let manifest: Value = serde_json::from_str(&std::fs::read_to_string(folder.join("extension.json")).unwrap()).unwrap();
+    assert_eq!(manifest["command"][3], "index.ts");
 }
 
 #[tokio::test]

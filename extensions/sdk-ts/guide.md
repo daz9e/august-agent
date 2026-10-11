@@ -14,16 +14,41 @@ that runs a task in any thread and reports back (see Turns below), called once.
 To change what a default extension does (`render`, `approvals`, `memory`, ...), save one of
 your own under its name: it replaces the default.
 
-This guide and the types at the end are the whole API; you don't need August's source code.
+This guide is the whole API; you don't need August's source code. Next to it, in this
+skill's folder: `PROTOCOL.md`, the exact wire protocol (every message, operation, event and
+field), and `august.d.ts`, the TypeScript SDK's types.
 
 ## Shape
 
 An extension is a folder `<extensions dir>/<name>/` whose `extension.json` says what to run:
-`{ "command": [...], "env": {...}, "setup": [[...], ...] }`. August runs it in its own process
-and talks to it over stdin/stdout; any language works. In TypeScript (below) it is
-`index.ts`, run by bun through the TypeScript host:
-`{ "command": ["bun", "run", "{host}", "index.ts", "<name>"] }` — `save_extension` with
-`code` writes both files for you. `index.ts` default-exports a setup function:
+`{ "command": [...], "env": {...}, "setup": [[...], ...] }`. August runs `command` in the
+folder as its own process and talks to it over stdin/stdout (newline-delimited JSON).
+
+Pick the language that fits the job; none is preferred:
+- **TypeScript with the SDK** (below): least code, the protocol is handled for you. An
+  `index.ts` run by bun through the TypeScript host:
+  `{ "command": ["bun", "run", "{host}", "index.ts", "<name>"] }`.
+- **Any other language** (Python, Rust, Go, a shell script, ...): speak the protocol
+  yourself; see "Any language" below and `PROTOCOL.md`. Use it when the work needs that
+  language's libraries, an existing program, or speed.
+
+An extension has as many files as it needs: modules, assets, a `package.json`, a whole
+project. `save_extension` takes them all in `files` by path; for TypeScript, `extension.json`
+may be left out and is written for you (`code` is a shortcut for a lone `index.ts`).
+
+### More than one process
+
+August starts one process per extension, the one that speaks the protocol. It may start any
+number of others: workers, a server, a watcher, a binary it drives (`Bun.spawn`,
+`subprocess.Popen`, `std::process::Command`). They run in its process group, so they stop
+with it (crash, `/reload`, disable) and start again with it; nothing is left behind. Keep
+them alive yourself (restart one that exits) and report them in `health` (`failed` when one
+can't be brought back, so August restarts the whole extension). Only the main process
+talks to August: workers report to it (pipes, a socket, files), not over stdout.
+Parts that are independent of each other (one could be off while the other runs) are
+better as separate extensions.
+
+The TypeScript `index.ts` default-exports a setup function:
 
 ```ts
 import type { August } from "august";
@@ -384,9 +409,30 @@ extensions it watches.
 
 ## Any language
 
-A folder with `extension.json` instead of `index.ts` is an extension in any language: August
-runs its `command` in the folder and speaks the same protocol over stdin/stdout
-(newline-delimited JSON; see the types at the end for the methods):
+Without the SDK an extension speaks the protocol itself. `PROTOCOL.md` is exact; in short:
+
+- One JSON object per line, both ways: August writes to its stdin, it writes to stdout
+  (flush every line). Log to stderr only; stdout is the protocol.
+- Requests `{"id", "method", "params"}`, replies `{"id", "result"}` or
+  `{"id", "error": {"message"}}`, notifications `{"method", "params"}` with no `id`. Both
+  sides send requests on the same link, interleaved: answer each on its own thread/task,
+  so a slow one or one that calls back into August doesn't block the others.
+- Start: send the notification `ready` within 30 s, with `protocol: 2` and everything it
+  offers: `summary`, `details`, `tools` (`[{name, description, parameters}]`), `commands`,
+  `events` (the hooks), `needs`, `timeouts`, `sections`, `settings`, `emits`, `accounts`,
+  ... (`PROTOCOL.md` §3). Offer changes later: send the whole object again as `manifest`.
+- August calls it with `tool` `{name, input, ctx}` (reply: the output string), `command`
+  `{name, args, ctx}` (reply text or null), `event` `{name, data, ctx}` (reply: the
+  changed fields, `{}` for none), `health` (`{status}`), and the notification `cancel`
+  `{id}`. Answer an unknown method with an error.
+- Every SDK call in this guide is an operation request to August with the same name as in
+  `PROTOCOL.md` §6: `august.send(thread, message)` is
+  `{"id": 1, "method": "send", "params": {"thread": ..., "message": ...}}`,
+  `ctx.callTool(...)` is `callTool`, `august.store.get(k)` is `store_get`,
+  `august.turns.start` is `turn_start`. Inside a call from August, pass its `ctx.thread`
+  as `thread` and `ctx.turn.id` as `from_turn`. `ops` lists every operation.
+
+`extension.json`:
 
 ```json
 { "command": ["python3", "main.py"], "env": { "MODE": "fast" },
@@ -448,4 +494,3 @@ shows what each one needs. Ask for no more than the extension uses.
   (August continues as if it returned nothing); a crashed extension is restarted.
 - Built-in command names can't be taken; a tool of yours replaces a default extension's tool of the same name.
 
-## Full API types
