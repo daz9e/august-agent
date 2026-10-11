@@ -83,7 +83,7 @@ impl Conv {
                     *b = Block::Text(format!("[image: {path}]"));
                     changed = true;
                 }
-                Block::ToolResult { content, .. } if content.len() > PRUNE_OVER => {
+                Block::ToolResult { content, .. } if content.chars().count() > PRUNE_OVER => {
                     let head: String = content.chars().take(1_200).collect();
                     let tail: Vec<char> = content.chars().rev().take(400).collect();
                     let tail: String = tail.into_iter().rev().collect();
