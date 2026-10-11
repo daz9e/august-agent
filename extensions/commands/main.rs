@@ -14,6 +14,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("login", "Sign in to an account (a model provider: then use it): /login [account]"),
     ("logout", "Sign out of an account: /logout [account]"),
     ("status", "Show provider, model and workspace"),
+    ("onboard", "Set August up step by step: provider, model, messengers"),
     ("extensions", "List extensions; enable or disable one"),
     ("config", "Show or change a setting: /config [path [value]]"),
     ("home", "Make this thread the home thread (where extensions report)"),
@@ -85,27 +86,16 @@ async fn command(august: &August, name: &str, args: &str, ctx: &Ctx) -> Result<S
             let Some(a) = pick_account(august, ctx, name, args).await? else {
                 return Ok("Cancelled.".into());
             };
-            let (id, label) = (str(&a["id"]).to_string(), str(&a["label"]).to_string());
             if name == "logout" {
+                let (id, label) = (str(&a["id"]), str(&a["label"]));
                 return Ok(match august.call("logout", mine(json!({"account": id}))).await {
                     Ok(_) => format!("Signed out of {label}."),
                     Err(e) => format!("Could not sign out: {e:#}"),
                 });
             }
-            let signed = match ctx.call("login", mine(json!({"account": id}))).await {
-                Ok(v) => v,
-                Err(e) => return Ok(format!("Sign-in failed: {e:#}")),
-            };
-            let done = match signed["who"].as_str() {
-                Some(who) => format!("Signed in to {label} as {who}."),
-                None => format!("Signed in to {label}."),
-            };
-            let Some(provider) = a["providers"][0].as_str() else { return Ok(done) };
-            match august.call("model_set", mine(json!({"model": format!("{provider}:")}))).await {
-                Ok(m) => format!("{done}\nNow using `{} · {}`. `/models` lists the others, `/model <id>` switches.", str(&m["provider"]), str(&m["model"])),
-                Err(e) => format!("{done}\nCould not switch to it: {e:#}"),
-            }
+            sign_in(august, ctx, &a).await?
         }
+        "onboard" => onboard(august, ctx).await?,
         "extensions" => {
             let changed = match args.split_whitespace().collect::<Vec<_>>()[..] {
                 [] => Ok(()),
@@ -140,6 +130,89 @@ async fn command(august: &August, name: &str, args: &str, ctx: &Ctx) -> Result<S
         "reload" => format!("Extensions reloaded.\n{}", status(&august.call("extensions_reload", mine(json!({}))).await?)),
         _ => unreachable!("not one of ours: {name}"),
     })
+}
+
+/// Signs in to account `a` from this thread; one with a provider becomes the one in use.
+async fn sign_in(august: &August, ctx: &Ctx, a: &Value) -> Result<String> {
+    let (id, label) = (str(&a["id"]), str(&a["label"]));
+    let signed = match ctx.call("login", mine(json!({"account": id}))).await {
+        Ok(v) => v,
+        Err(e) => return Ok(format!("Sign-in failed: {e:#}")),
+    };
+    let done = match signed["who"].as_str() {
+        Some(who) => format!("Signed in to {label} as {who}."),
+        None => format!("Signed in to {label}."),
+    };
+    let Some(provider) = a["providers"][0].as_str() else { return Ok(done) };
+    Ok(match august.call("model_set", mine(json!({"model": format!("{provider}:")}))).await {
+        Ok(m) => format!("{done}\nNow using `{} · {}`. `/models` lists the others, `/model <id>` switches.", str(&m["provider"]), str(&m["model"])),
+        Err(e) => format!("{done}\nCould not switch to it: {e:#}"),
+    })
+}
+
+/// `/onboard`: a walk through what August needs, each step a question with buttons; typing
+/// an answer works too (a model id the buttons don't show). Signing in is `/login`'s.
+async fn onboard(august: &August, ctx: &Ctx) -> Result<String> {
+    let wait = std::time::Duration::from_secs(600);
+    let accounts = august.call("accounts", mine(json!({}))).await?;
+    let accounts = accounts.as_array().cloned().unwrap_or_default();
+    let (providers, others): (Vec<&Value>, Vec<&Value>) = accounts.iter().partition(|a| a["providers"].as_array().is_some_and(|p| !p.is_empty()));
+    let connected = |a: &Value| a["status"] == "connected";
+
+    // 1. A model provider.
+    let signed: Vec<&str> = providers.iter().filter(|a| connected(a)).map(|a| str(&a["label"])).collect();
+    let mut options: Vec<String> = providers.iter().filter(|a| !connected(a)).map(|a| str(&a["label"]).to_string()).collect();
+    let question = if signed.is_empty() {
+        "**Setup 1/3 · Model provider**\nAugust thinks with a model. Sign in to which provider?".to_string()
+    } else {
+        options.insert(0, "Keep as is".into());
+        format!("**Setup 1/3 · Model provider**\nSigned in to {}. Add another?", signed.join(", "))
+    };
+    let Some(picked) = ctx.ask(&question, &options, wait).await? else { return Ok(paused()) };
+    if let Some(a) = providers.iter().find(|a| str(&a["label"]) == picked) {
+        ctx.send(&sign_in(august, ctx, a).await?).await?;
+    }
+
+    // 2. The model, of the provider in use.
+    let s = august.call("status", mine(json!({}))).await?;
+    let (provider, model) = (str(&s["provider"]).to_string(), str(&s["model"]).to_string());
+    if !provider.is_empty() {
+        let listed = august.call("models", mine(json!({"provider": provider}))).await.unwrap_or_default();
+        let keep = format!("Keep {model}");
+        let options: Vec<String> = std::iter::once(keep.clone())
+            .chain(listed.as_array().into_iter().flatten().filter_map(|m| m["id"].as_str()).filter(|id| *id != model).take(8).map(String::from))
+            .collect();
+        let question = format!("**Setup 2/3 · Model**\nUsing `{provider} · {model}`. Pick one, or type any model id.");
+        let Some(picked) = ctx.ask(&question, &options, wait).await? else { return Ok(paused()) };
+        if picked != keep {
+            let line = match august.call("model_set", mine(json!({"model": format!("{provider}:{picked}")}))).await {
+                Ok(m) => format!("Now using `{} · {}`.", str(&m["provider"]), str(&m["model"])),
+                Err(e) => format!("Could not switch model: {e:#}"),
+            };
+            ctx.send(&line).await?;
+        }
+    }
+
+    // 3. Messengers and other services, one question each.
+    let open: Vec<&Value> = others.iter().copied().filter(|a| !connected(a)).collect();
+    for (i, a) in open.iter().enumerate() {
+        let question = format!("**Setup 3/3 · Connections ({}/{})**\nConnect {}?", i + 1, open.len(), str(&a["label"]));
+        let Some(picked) = ctx.ask(&question, &["Connect".into(), "Skip".into()], wait).await? else { return Ok(paused()) };
+        if picked == "Connect" {
+            ctx.send(&sign_in(august, ctx, a).await?).await?;
+        }
+    }
+
+    let s = august.call("status", mine(json!({}))).await?;
+    Ok(format!(
+        "✅ **All set.** Model: `{} · {}`.\nJust write a message. `/help` lists commands; `august setup` runs this again.",
+        str(&s["provider"]),
+        str(&s["model"])
+    ))
+}
+
+fn paused() -> String {
+    "Setup paused: run `/onboard` (or `august setup`) to pick up again.".into()
 }
 
 /// Providers the user can use (one of their accounts is connected), the active one first:

@@ -189,3 +189,44 @@ async fn config_home_and_queue() {
     assert_eq!(run(&fake, "queue", "third").await, "📋 Queued.");
     assert_eq!(fake.calls("prompt"), vec![json!({"text": "third", "source": "user", "deliver": "followUp", "thread": thread("1")})]);
 }
+
+#[tokio::test]
+async fn onboard_walks_through_provider_model_and_connections() {
+    let fake = commands().await;
+    fake.on("accounts", |_| {
+        Ok(json!([
+            {"id": "anthropic", "label": "Anthropic", "status": "none", "providers": ["anthropic"]},
+            {"id": "openai", "label": "OpenAI", "status": "none", "providers": ["openai"]},
+            {"id": "telegram", "label": "Telegram", "status": "none", "providers": []}
+        ]))
+    });
+    fake.on("login", |_| Ok(json!({})));
+    fake.on("status", |_| Ok(json!({"provider": "anthropic", "model": "opus"})));
+    fake.on("models", |_| Ok(json!([{"id": "opus"}, {"id": "sonnet"}])));
+    fake.on("model_set", |p| {
+        let (provider, model) = p["model"].as_str().unwrap().split_once(':').unwrap();
+        Ok(json!({"provider": provider, "model": if model.is_empty() { "opus" } else { model }}))
+    });
+
+    let f = fake.clone();
+    let reply = tokio::spawn(async move { f.command("onboard", "", ctx("1")).await.unwrap().unwrap() });
+    // Nobody signed in yet: providers only, no "keep".
+    let ask = fake.wait_sent("Setup 1/3").await;
+    let labels: Vec<&str> = ask.buttons.iter().map(|b| b.label.as_str()).collect();
+    assert_eq!(labels, ["Anthropic", "OpenAI"]);
+    fake.press("1", &ask.buttons[0].id);
+    // The model in use is kept or switched; the list leaves it out.
+    let ask = fake.wait_sent("Setup 2/3").await;
+    let labels: Vec<&str> = ask.buttons.iter().map(|b| b.label.as_str()).collect();
+    assert_eq!(labels, ["Keep opus", "sonnet"]);
+    fake.press("1", &ask.buttons[1].id);
+    // Each service without a provider is offered on its own.
+    let ask = fake.wait_sent("Connect Telegram?").await;
+    fake.press("1", &ask.buttons[1].id);
+
+    let reply = reply.await.unwrap();
+    assert!(reply.starts_with("✅ **All set.**"), "{reply}");
+    assert_eq!(fake.calls("login"), vec![json!({"account": "anthropic", "thread": thread("1"), "as_user": true})]);
+    let set: Vec<_> = fake.calls("model_set").iter().map(|p| p["model"].clone()).collect();
+    assert_eq!(set, vec![json!("anthropic:"), json!("anthropic:sonnet")]);
+}
